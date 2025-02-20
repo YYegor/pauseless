@@ -1,0 +1,21 @@
+[tool.poetry]
+name = "pauseless"
+version = "0.1.0"
+description = ""
+authors = ["YYlab <sxfF9DUbbvyY4sQ>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.9"
+nltk = "^3.9.1"
+pattern = "^0.0.1a0"
+inflect = "^7.5.0"
+textblob = "^0.19.0"
+requests = "^2.32.3"
+python-telegram-bot = "^21.10"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
