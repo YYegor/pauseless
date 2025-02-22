@@ -6,14 +6,15 @@ from nltk.corpus import wordnet
 from nltk.tokenize import word_tokenize
 from nltk.probability import FreqDist
 from datetime import datetime
-
+import hashlib
+import json
 import string
 import re
 import requests
 import spacy
 import time
 from datetime import datetime, timedelta
-
+import os
 nlp = spacy.load("en_core_web_sm")
 nltk.download('wordnet')
 nltk.download('punkt')
@@ -24,6 +25,20 @@ srt_filename = "Shrinking.S02E12.The.Last.Thanksgiving.720p.ATVP.WEB-DL.DDP5.1.H
 
 words = brown.words()
 freq_dist = FreqDist(word.lower() for word in words)
+
+
+def hash_srt_file(file_path, hash_algorithm="sha256"):
+    """Calculate hash of an SRT file based on its content."""
+    hasher = hashlib.new(hash_algorithm)
+
+    with open(file_path, "rb") as f:
+        while chunk := f.read(8192):  # Read in chunks for efficiency
+            hasher.update(chunk)
+
+    return hasher.hexdigest()
+
+
+# Example usage:
 
 
 def check_if_name(word) -> bool:
@@ -66,7 +81,8 @@ def get_wordnet_pos(word):
     tag_dict = {"J": wordnet.ADJ, "N": wordnet.NOUN, "V": wordnet.VERB, "R": wordnet.ADV}
     return tag_dict.get(tag, wordnet.NOUN)  # Default to NOUN if not found
 
-def get_words_by_timedelta(srt_timestamp: timedelta, resulting_dict):
+
+def get_words_by_timedelta(srt_timestamp: timedelta, resulting_dict:dict):
     for i in resulting_dict:
         start_dt = datetime.strptime(resulting_dict[i][0]['start'], "%H:%M:%S,%f")
         start_delta = timedelta(
@@ -87,7 +103,7 @@ def get_words_by_timedelta(srt_timestamp: timedelta, resulting_dict):
     return None
 
 
-def cleaned_line(line):
+def get_cleaned_srt_line(line:str)->str:
     cleaned_text = line.replace("<i>", "")
     cleaned_text = cleaned_text.replace("</i>", "")
     cleaned_text = cleaned_text.replace("- ", "")
@@ -107,7 +123,7 @@ def get_time_index(word: str, parsed_srt):
             return parsed_srt[i]['time'].split(" ")[0], parsed_srt[i]['time'].split(" ")[2]
 
 
-def parse_srt(filename):
+def srt_parse_from_file(filename)->dict:
     with open(filename, 'r', encoding='utf-8-sig') as file:
         content = file.read().strip()
 
@@ -121,8 +137,8 @@ def parse_srt(filename):
             try:
                 index = int(lines[0].strip())  # Subtitle index
             except ValueError as e:
-                print (f"Error while parsing {lines[0]}, {e}")
-                return None
+                print(f"Error while parsing {lines[0]}, {e}")
+                return {}
 
             time_range = lines[1]  # Time range (e.g., 00:00:01,500 --> 00:00:04,000)
             text = ' '.join(lines[2:])  # Combine text lines
@@ -132,90 +148,108 @@ def parse_srt(filename):
     return subtitles
 
 
-srt_dict = parse_srt(srt_filename)
-words = []
-for i in range(1, len(srt_dict)):
-    clean_text = cleaned_line(srt_dict[i]['text'])
-    for word in clean_text.split():
-        words.append(word)
-        # singularize
-
-        # print (word, get_wordnet_pos(word), lemmatizer.lemmatize(word, get_wordnet_pos(word)))
-
-# calc words stat from subtitle
-srt_freq_dist = FreqDist(words)
-
-words_unique = set(words)
-words_freq = {}
-
-for word in words:
-    try:
-        words_freq[word] = freq_dist[word.lower()]
-    except KeyError:
-        words_freq[word] = -1
-
-resulting_dict = {}
-index = 1
-
-for w in words_freq:
-    if words_freq[w] < 1:
-        if check_if_name(w):
-            meaning = 'a name'
-        else:
-            meaning = get_meaning(w)
-            if meaning:
-                meaning = meaning[0]
-            else:
-                meaning = get_urbandictionaty_meaning(w) + ' [UD]'
-        try:
-            srt_freq_w = srt_freq_dist[w]
-        except KeyError:
-            srt_freq_w = 0
-        period = get_time_index(w, srt_dict)
-        resulting_dict.setdefault(period[0], []).append({'start': period[0],
-                                                         'end': period[1],
-                                                         'word': w,
-                                                         'meaning': meaning,
-                                                         'freq_srt': srt_freq_w})
-
-        # print(f"{times[0]} {times[1]} {w:15} ({srt_freq_w}) – {meaning}")
-        meaning = None
-        index += 1
-
-print(resulting_dict)
-input('Press Enter to continue')
-
-loop_start_time = datetime.now()
-once_index = ''
-
-last_key = list(resulting_dict.keys())[-1]
-full_end_dt = datetime.strptime(resulting_dict[last_key][0]['end'], "%H:%M:%S,%f")
-full_end_delta = timedelta(
-    hours=full_end_dt.hour,
-    minutes=full_end_dt.minute,
-    seconds=full_end_dt.second,
-    microseconds=full_end_dt.microsecond)
+def words_dump_as_json_by_hash(res_dict: dict, content_hash: str):
+    with open(content_hash + '.json', "w", encoding="utf-8") as f:
+        json.dump(res_dict, f, ensure_ascii=False, indent=4)
 
 
+def words_load_from_json_by_hash(content_hash: str)->dict:
+    fn = content_hash + '.json'
+    if os.path.exists(fn):  # Check if file exists
+        with open(fn, "r", encoding="utf-8") as f:
+            return json.load(f)  # Load JSON into dictionary
+    else:
+        return {}  # Return None if file doesn't exist
 
 
-print()
-index_shown = None
-while True:
-    # Get elapsed time
-    current_time = datetime.now() - loop_start_time
-    # print(current_time)
+if __name__ == '__main__':
+    hash_from_content = hash_srt_file(srt_filename)
+    resulting_dict = words_load_from_json_by_hash(hash_from_content)
 
-    words_item = get_words_by_timedelta(current_time, resulting_dict)
-    # print(words_item)
-    if words_item and index_shown != next(iter(words_item.keys())):
-        for item in words_item[next(iter(words_item.keys()))]:
-            print(f"{item['word']:15} - {item['meaning']}")
-        index_shown = next(iter(words_item.keys()))
+    if not resulting_dict:
+        srt_dict = srt_parse_from_file(srt_filename)
+        words = []
+        for i in range(1, len(srt_dict)):
+            clean_text = get_cleaned_srt_line(srt_dict[i]['text'])
+            for word in clean_text.split():
+                words.append(word)
+                # singularize
 
-    # Exit loop after end_time has passed
-    if current_time > full_end_delta:
-        print("Time range ended. Exiting loop.")
-        break
+                # print (word, get_wordnet_pos(word), lemmatizer.lemmatize(word, get_wordnet_pos(word)))
 
-    time.sleep(0.2)  # Sleep to reduce CPU usage
+        # calc words stat from subtitle
+        srt_freq_dist = FreqDist(words)
+
+        words_unique = set(words)
+        words_freq = {}
+
+        for word in words:
+            try:
+                words_freq[word] = freq_dist[word.lower()]
+            except KeyError:
+                words_freq[word] = -1
+
+
+        index = 1
+
+        for w in words_freq:
+            if words_freq[w] < 1:
+                if check_if_name(w):
+                    meaning = 'a name'
+                else:
+                    meaning = get_meaning(w)
+                    if meaning:
+                        meaning = meaning[0]
+                    else:
+                        meaning = get_urbandictionaty_meaning(w) + ' [UD]'
+                try:
+                    srt_freq_w = srt_freq_dist[w]
+                except KeyError:
+                    srt_freq_w = 0
+                period = get_time_index(w, srt_dict)
+                resulting_dict.setdefault(period[0], []).append({'start': period[0],
+                                                                 'end': period[1],
+                                                                 'word': w,
+                                                                 'meaning': meaning,
+                                                                 'freq_srt': srt_freq_w})
+
+                # print(f"{times[0]} {times[1]} {w:15} ({srt_freq_w}) – {meaning}")
+                meaning = None
+                index += 1
+
+        words_dump_as_json_by_hash(resulting_dict, hash_from_content)
+
+    print(resulting_dict)
+    input('Press Enter to continue')
+
+    loop_start_time = datetime.now()
+    once_index = ''
+
+    last_key = list(resulting_dict.keys())[-1]
+    full_end_dt = datetime.strptime(resulting_dict[last_key][0]['end'], "%H:%M:%S,%f")
+    full_end_delta = timedelta(
+        hours=full_end_dt.hour,
+        minutes=full_end_dt.minute,
+        seconds=full_end_dt.second,
+        microseconds=full_end_dt.microsecond)
+
+    print()
+    index_shown = None
+    while True:
+        # Get elapsed time
+        current_time = datetime.now() - loop_start_time
+        # print(current_time)
+
+        words_item = get_words_by_timedelta(current_time, resulting_dict)
+        # print(words_item)
+        if words_item and index_shown != next(iter(words_item.keys())):
+            for item in words_item[next(iter(words_item.keys()))]:
+                print(f"{item['word']:15} - {item['meaning']}")
+            index_shown = next(iter(words_item.keys()))
+
+        # Exit loop after end_time has passed
+        if current_time > full_end_delta:
+            print("Time range ended. Exiting loop.")
+            break
+
+        time.sleep(0.2)  # Sleep to reduce CPU usage

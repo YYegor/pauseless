@@ -1,6 +1,7 @@
-key = '7959966862:AAG6BnLLdA4TSITM10A5BDP3hDF4XUGR2yY'
-
+import os
 import logging
+from webbrowser import Opera
+
 from telegram import Update, InputMediaPhoto, InlineKeyboardButton, InlineKeyboardMarkup
 
 from telegram.ext import (
@@ -10,7 +11,10 @@ from telegram.ext import (
     filters,
     CallbackQueryHandler
 )
-from find_subtitles import suggestion_wrapper, resize_image
+from find_subtitles import suggestion_wrapper, get_img_resized, parse_episodes, Opnsub
+
+TG_BOT_KEY = os.environ.get('TG_BOT_KEY')
+opn = Opnsub()
 
 # Enable logging for debug info
 logging.basicConfig(
@@ -19,47 +23,62 @@ logging.basicConfig(
 )
 
 
-def f1(button_id: str):
-    print(f"f1 called with button_id = {button_id}")
-    # Perform any action you want here (DB update, etc.)
+def show_episodes(show_id:int, season=1)->list:
+    episodes_data = opn.get_opnsub_subtitles_names(show_id, season=season)
+    if episodes_data:
+        res_dict = parse_episodes(episodes_data)
+        formatted_lines = []
+        for res in res_dict:
+            formatted_lines.append(f'{res_dict[res]["title"]}')
+        return formatted_lines
+    else:
+        return []
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_query = update.message.text  # The text from the user (not used here, but available)
-    response_dict = suggestion_wrapper(user_query)
-    for k in response_dict:
-        with open(resize_image(response_dict[k]["img"]), "rb") as f:
-            keyboard = [
-                [
-                    InlineKeyboardButton(f"{response_dict[k]['caption']}", callback_data=k)
+    suggestions = opn.get_opnsub_suggestions(user_query)
+    response_dict = suggestion_wrapper(suggestions)
+
+    if response_dict:
+
+        for k in response_dict:
+            with open(get_img_resized(response_dict[k]["img"]), "rb") as f:
+                keyboard = [
+                    [
+                        InlineKeyboardButton(f"{response_dict[k]['caption']}", callback_data=k)
+                    ]
                 ]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await update.message.reply_photo(photo=f,
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await update.message.reply_photo(photo=f,
+                                                 reply_markup=reply_markup)
 
-                                             reply_markup=reply_markup)
-
+    else:
+        await update.message.reply_text("Can't find any suggestions. Try again")
 
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Handle presses on our inline buttons.
     """
     query = update.callback_query
-    button_id = query.data  # The callback_data we set in the button
+    show_id = query.data  # The callback_data we set in the button
 
     # Call the custom function with this button ID
-    f1(button_id)
+
+    episodes = show_episodes(int(show_id))
+
+    for episode in episodes:
+        await query.message.reply_text(f"{episode}")
 
     # Acknowledge the callback to avoid "stuck" button
-    await query.answer("Button pressed!")
+    # await query.answer("Button pressed!")
 
     # Optionally send a follow-up message or edit the existing one
-    await query.message.reply_text(f"You pressed button ID: {button_id}")
 
 
 def main():
     # Your Bot API key (token) goes here
-    bot_token = key
+    bot_token = TG_BOT_KEY
 
     application = ApplicationBuilder().token(bot_token).build()
 
