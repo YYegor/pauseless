@@ -3,6 +3,7 @@ from io import BytesIO
 from PIL import Image
 import os
 import logging
+import requests_cache
 
 img_cache_folder_name = 'cache'
 
@@ -21,8 +22,50 @@ class Opnsub:
         self.headers = {
             "Content-Type": "application/json; charset=utf-8"
         }
+        requests_cache.install_cache(backend='filesystem', expire_after=600*3)
 
-    def get_opnsub_suggestions(self, query, showtype="Tvshow") -> list:
+    import requests
+
+    def download_file(self, url: str, save_path: str):
+        """
+        Downloads a file from the given URL and saves it to disk.
+
+        :param url: The URL of the file to download.
+        :param save_path: The local file path where the file should be saved.
+        """
+        try:
+            response = requests.get(url, stream=True)
+            response.raise_for_status()  # Raise an error for bad responses (4xx, 5xx)
+
+            with open(save_path, "wb") as file:
+                for chunk in response.iter_content(chunk_size=8192):
+                    file.write(chunk)
+
+            print(f"File downloaded successfully: {save_path}")
+        except requests.exceptions.RequestException as e:
+            print(f"Download failed: {e}")
+
+
+    def get_srt_download_url(self, file_id)->dict:
+        api_url = self.api_url_base + '/download'
+        headers = dict(self.headers)
+        headers["Api-Key"] = self.opnsub_api_key
+        headers["Accept"] = "application/json"
+
+        params = {
+        "file_id": file_id}
+
+        logging.info(f"Subtitles call with p:{params}")
+        response = requests.post(api_url, headers=headers, params=params)
+
+        if response.status_code == 200:
+            data = response.json()
+            return data
+        else:
+            logging.error(f"Error: {response.status_code}, {response.text}")
+            return {}
+
+    def get_suggestions(self, query, showtype="Tvshow") -> list:
         query = query.replace(' ', '+')
 
         response = requests.get(f"https://www.opensubtitles.com/en/en/search/autocomplete/{query}.json",
@@ -33,13 +76,14 @@ class Opnsub:
             result = []
             for show in data:
                 if show["type"] == showtype:
+                    show["poster"] = opnsub_fix_poster_url(show["poster"])
                     result.append(show)
             return result
         else:
             logging.error(f"Error: {response.status_code}")
             return []
 
-    def get_opnsub_subtitles_names(self, parent_feature_id:int, season=1, year=0, lang="en") -> dict:
+    def get_srt_names(self, parent_feature_id: int, season=1, year=0, lang="en") -> dict:
         api_url = self.api_url_base + '/subtitles'
         headers = dict(self.headers)
         headers["Api-Key"] = self.opnsub_api_key
@@ -93,14 +137,23 @@ def get_img_resized(input_path, new_height=100):
 
 
 def parse_episodes(opn_data: dict) -> dict:
-    sorted_data = sorted(opn_data['data'], key=lambda item: item['attributes']['feature_details']['episode_number'],
-                         reverse=False)
     res_dict = {}
+    try:
+        sorted_data = sorted(opn_data['data'], key=lambda item: item['attributes']['feature_details']['episode_number'],
+                             reverse=False)
+    except KeyError:
+        logging.error(f"Error: {opn_data['data']}")
+        return res_dict
+    print(sorted_data)
     for data in sorted_data:
         attrs = data['attributes']
         feature_details = attrs['feature_details']
+        files = attrs['files'][0] # TODO: detect right index
         if not attrs['hearing_impaired']:
-            res_dict[feature_details['episode_number']] = {'id': data['id'], 'title': feature_details['title']}
+            res_dict[feature_details['episode_number']] = {'id': data['id'],
+                                                           'title': feature_details['title'],
+                                                           'file_id':files['file_id'],
+                                                           'file_name': files['file_name']+'.srt',}
             # print(f"{feature_details['episode_number']} {feature_details['title']} {data['id']}")
     return res_dict
 
@@ -112,21 +165,13 @@ def opnsub_fix_poster_url(url):
         return url
 
 
-def suggestion_wrapper(get_opnsub_suggestions_data:list):
-    if get_opnsub_suggestions_data:
-        resp = {}
-        for d in get_opnsub_suggestions_data:
-            resp[d['id']] = {"caption": f"{str(d['title']).capitalize()}, {d['year']}  rate:{d['rating']}\n",
-                             "img": opnsub_fix_poster_url(d['poster'])}
-        return resp
-
-
 if __name__ == '__main__':
     opn = Opnsub()
     # print(opn.get_opnsub_suggestions("house of cards"))
 
-
-    series_data = opn.get_opnsub_subtitles_names(parent_feature_id=8780)
+    series_data = opn.get_srt_names(parent_feature_id=12809)
     print(parse_episodes(series_data))
-
+    # download_info = (opn.get_srt_download_url(9022929))
+    # if download_info:
+    #     opn.download_file(download_info['link'], download_info['file_name'])
     # print(get_opnsub_subtitles_names('Shrinking')['data'])
