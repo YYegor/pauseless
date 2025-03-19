@@ -1,26 +1,41 @@
 import os
 import logging
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+# Enable logging for debug info
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO,
+    filename="./app.log"
+)
 
+from mixpanel import Mixpanel
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
     MessageHandler,
     ContextTypes,
     filters,
-    CallbackQueryHandler, ConversationHandler
+    CallbackQueryHandler, CallbackContext, ConversationHandler, CommandHandler
 )
-from find_subtitles import get_img_resized, parse_episodes, Opnsub
+from find_subtitles import get_img_resized, parse_episodes, Opnsub, srt_cached
+from srt_processor import extract_words
+
 
 TG_BOT_KEY = os.environ.get('TG_BOT_KEY')
 opn = Opnsub()
 
-# Enable logging for debug info
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO,
-    filename="/Users/egor/app.log"
-)
+MIXPANEL_TOKEN = os.environ.get('MIXPANEL_TOKEN')
+mp = Mixpanel(MIXPANEL_TOKEN)
+logging.info('Mixpanel initialized')
+
+
+async def start(update: Update, context: CallbackContext):
+    user_id = update.message.chat_id
+    mp.track(str(user_id), 'Bot Started', {
+        'username': update.message.from_user.username,
+        'first_name': update.message.from_user.first_name
+    })
+    await update.message.reply_text("Welcome.")
 
 
 def suggestion_wrapper(get_opnsub_suggestions_data: list):
@@ -32,21 +47,14 @@ def suggestion_wrapper(get_opnsub_suggestions_data: list):
         return resp
 
 
-def show_episodes(show_id: int, season=1) -> list:
-    episodes_data = opn.get_srt_names(show_id, season=season)
-    if episodes_data:
-        res_dict = parse_episodes(episodes_data)
-        if res_dict:
-            formatted_lines = []
-            for res in res_dict:
-                formatted_lines.append(f'{res_dict[res]["title"]}')
-            return formatted_lines
-    else:
-        return []
+def get_episodes(show_id: int, season=1) -> None | dict:
+    episodes_raw_data = opn.get_srt_names(show_id, season=season)
+    if episodes_raw_data:
+        return parse_episodes(episodes_raw_data)
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_query = update.message.text  # The text from the user (not used here, but available)
+    user_query = update.message.text
     suggestions = opn.get_suggestions(user_query)
     response_dict = suggestion_wrapper(suggestions)
 
@@ -78,32 +86,75 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     if "show_id" in query.data:
         show_id = query.data.split("show_id:")[1]
 
-        episodes = show_episodes(int(show_id))
+        mp.track(str(update.effective_chat.id), 'Show requested', {
+            'show_id': show_id
+        })
+
+        episodes = get_episodes(int(show_id))
         if episodes:
+            context.user_data["episodes"] = episodes
             await query.message.reply_text(f"Season 1:")
             for episode in episodes:
                 keyboard = [
                     [
-                        InlineKeyboardButton(f"Watch",
-                                             callback_data=f"episode_id:{1}")
+                        InlineKeyboardButton(f"Get episode",
+                                             callback_data=f"episode_id:{episodes[episode]['id']}")
                     ]
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
-                await query.message.reply_text(f"{episode}",reply_markup=reply_markup)
+                await query.message.reply_text(f"{episodes[episode]['title']}", reply_markup=reply_markup)
         else:
             await query.message.reply_text(f"Sorry, can't find episodes")
+            context.user_data["episodes"] = {}  # Reset if no episodes found
         return ConversationHandler.END
 
     if "episode_id" in query.data:
-        episode_id = query.data
-        await query.answer(f"Episode {episode_id} will be requested")
+        episode_id = query.data.split("episode_id:")[1]
+        logging.info(f"Episode data = {episode_id}")
+
+        mp.track(str(update.effective_chat.id), 'Episode requested', {
+            'episode_id': episode_id
+        })
+
+        episodes = context.user_data.get("episodes", {})
+
+        # Ensure episode exists in stored data
+        if not episodes:
+            await query.message.reply_text("Something went wrong.")
+            logging.error(f"Didn't find episodes data when called for episode {episode_id}")
+            return
+
+        await query.answer(f"Requesting episode data (id: {episode_id})")
+
+        file_name = ''
+        file_id = 0
+        title = ''
+        for episode in episodes:
+            if episode_id == episodes[episode]['id']:
+                file_name = episodes[episode]['file_name']
+                file_id = int(episodes[episode]['file_id'])
+                title = episodes[episode]['title']
+
+        if not srt_cached(file_name):
+            logging.info(f"Srt file is not cached {file_name}")
+            download_info = opn.get_srt_download_info(file_id)
+            if download_info:
+                logging.info(f"Download data acquired {download_info}")
+                if opn.download_file(download_info['link'], download_info['file_name']):
+                    await query.answer(f"Episode downloaded successfully.")
+        else:
+            logging.info(f"Srt file cached! {file_name}")
+        await query.message.reply_text(f"Start processing the text {title}")
+        res = extract_words(file_name)
+        if res:
+            await query.message.reply_text(f"Got {len(res)}")
+
+        return ConversationHandler.END
 
 
 def main():
-    # Your Bot API key (token) goes here
-    bot_token = TG_BOT_KEY
 
-    application = ApplicationBuilder().token(bot_token).build()
+    application = ApplicationBuilder().token(TG_BOT_KEY).build()
 
     # Handler for any text message
     application.add_handler(
@@ -113,6 +164,7 @@ def main():
     application.add_handler(
         CallbackQueryHandler(handle_callback_query)
     )
+    application.add_handler(CommandHandler("start", start))
 
     application.run_polling()
 

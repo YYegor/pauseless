@@ -1,30 +1,32 @@
 import nltk
 from nltk.corpus import brown
-from nltk.probability import FreqDist
 from nltk.stem import WordNetLemmatizer
 from nltk.corpus import wordnet
-from nltk.tokenize import word_tokenize
 from nltk.probability import FreqDist
-from datetime import datetime
 import hashlib
 import json
-import string
 import re
 import requests
 import spacy
 import time
 from datetime import datetime, timedelta
 import os
+import logging
+
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO,
+    filename="./app.log"
+)
+
 nlp = spacy.load("en_core_web_sm")
 nltk.download('wordnet')
 nltk.download('punkt')
 nltk.download('averaged_perceptron_tagger_eng')
 lemmatizer = WordNetLemmatizer()
-srt_filename = "Shrinking.S02E12.The.Last.Thanksgiving.720p.ATVP.WEB-DL.DDP5.1.H.264-NTb.srt"
-# srt_filename = "01 The One After I Do.srt"
 
 words = brown.words()
-freq_dist = FreqDist(word.lower() for word in words)
+WORDS_FREQ_DIST = FreqDist(word.lower() for word in words)
 
 
 def hash_srt_file(file_path, hash_algorithm="sha256"):
@@ -36,9 +38,6 @@ def hash_srt_file(file_path, hash_algorithm="sha256"):
             hasher.update(chunk)
 
     return hasher.hexdigest()
-
-
-# Example usage:
 
 
 def check_if_name(word) -> bool:
@@ -60,7 +59,7 @@ def get_urbandictionaty_meaning(word):
         try:
             data = data['list'][0]['definition'].replace(']', '')
         except IndexError as e:
-            print(f"Error with {word}, {data}")
+            logging.warning(f"UD: Can't find with {word}, {data}")
             return 'None'
         data = data.replace('[', '')
         data = data.replace('\n', '')
@@ -82,7 +81,7 @@ def get_wordnet_pos(word):
     return tag_dict.get(tag, wordnet.NOUN)  # Default to NOUN if not found
 
 
-def get_words_by_timedelta(srt_timestamp: timedelta, resulting_dict:dict):
+def get_words_by_timedelta(srt_timestamp: timedelta, resulting_dict: dict):
     for i in resulting_dict:
         start_dt = datetime.strptime(resulting_dict[i][0]['start'], "%H:%M:%S,%f")
         start_delta = timedelta(
@@ -103,14 +102,15 @@ def get_words_by_timedelta(srt_timestamp: timedelta, resulting_dict:dict):
     return None
 
 
-def get_cleaned_srt_line(line:str)->str:
-    cleaned_text = line.replace("<i>", "")
-    cleaned_text = cleaned_text.replace("</i>", "")
-    cleaned_text = cleaned_text.replace("- ", "")
-    cleaned_text = cleaned_text.replace(" -", "")
-    cleaned_text = cleaned_text.replace("'s", "")
-    cleaned_text = cleaned_text.replace("'d", "")
-    cleaned_text = cleaned_text.replace("'ve", "")
+def get_cleaned_srt_line(line: str) -> str:
+    replacements = [
+        "<i>", "</i>", "- ", " -", "'s", "'d", "'ve", "'ll", "[", "]"
+    ]
+
+    cleaned_text = line
+    for char in replacements:
+        cleaned_text = cleaned_text.replace(char, "")
+
     cleaned_text = re.sub(r'\{\\an\d\}', '', cleaned_text)
 
     cleaned_text = re.sub(r"[-.!?0123456789:,\"]", ' ', cleaned_text)
@@ -123,7 +123,7 @@ def get_time_index(word: str, parsed_srt):
             return parsed_srt[i]['time'].split(" ")[0], parsed_srt[i]['time'].split(" ")[2]
 
 
-def srt_parse_from_file(filename)->dict:
+def srt_parse_from_file(filename) -> dict:
     with open(filename, 'r', encoding='utf-8-sig') as file:
         content = file.read().strip()
 
@@ -137,7 +137,7 @@ def srt_parse_from_file(filename)->dict:
             try:
                 index = int(lines[0].strip())  # Subtitle index
             except ValueError as e:
-                print(f"Error while parsing {lines[0]}, {e}")
+                logging.error(f"Error while parsing {lines[0]}, {e}")
                 return {}
 
             time_range = lines[1]  # Time range (e.g., 00:00:01,500 --> 00:00:04,000)
@@ -153,7 +153,7 @@ def words_dump_as_json_by_hash(res_dict: dict, content_hash: str):
         json.dump(res_dict, f, ensure_ascii=False, indent=4)
 
 
-def words_load_from_json_by_hash(content_hash: str)->dict:
+def words_load_from_json_by_hash(content_hash: str) -> dict:
     fn = content_hash + '.json'
     if os.path.exists(fn):  # Check if file exists
         with open(fn, "r", encoding="utf-8") as f:
@@ -162,33 +162,35 @@ def words_load_from_json_by_hash(content_hash: str)->dict:
         return {}  # Return None if file doesn't exist
 
 
-if __name__ == '__main__':
-    hash_from_content = hash_srt_file(srt_filename)
-    resulting_dict = words_load_from_json_by_hash(hash_from_content)
+def extract_words(srt_filename: str) -> dict:
+    try:
+        hash_from_content = hash_srt_file(srt_filename)
+    except FileNotFoundError:
+        logging.error(f"No srt file found {srt_filename}. Can't extract words")
+        return {}
 
-    if not resulting_dict:
+    resulting_dict = words_load_from_json_by_hash(hash_from_content)
+    if resulting_dict:
+        logging.info(f"Cached data found for {srt_filename} of {len(resulting_dict)} words")
+
+    else:
         srt_dict = srt_parse_from_file(srt_filename)
         words = []
         for i in range(1, len(srt_dict)):
             clean_text = get_cleaned_srt_line(srt_dict[i]['text'])
             for word in clean_text.split():
                 words.append(word)
-                # singularize
-
-                # print (word, get_wordnet_pos(word), lemmatizer.lemmatize(word, get_wordnet_pos(word)))
 
         # calc words stat from subtitle
         srt_freq_dist = FreqDist(words)
 
-        words_unique = set(words)
         words_freq = {}
 
         for word in words:
             try:
-                words_freq[word] = freq_dist[word.lower()]
+                words_freq[word] = WORDS_FREQ_DIST[word.lower()]
             except KeyError:
                 words_freq[word] = -1
-
 
         index = 1
 
@@ -213,15 +215,15 @@ if __name__ == '__main__':
                                                                  'meaning': meaning,
                                                                  'freq_srt': srt_freq_w})
 
-                # print(f"{times[0]} {times[1]} {w:15} ({srt_freq_w}) – {meaning}")
-                meaning = None
                 index += 1
+        try:
+            words_dump_as_json_by_hash(resulting_dict, hash_from_content)
+        except IOError as e:
+            logging.error(f"Error while writing to cache words json file: {e}. No cache saved.")
+    return resulting_dict
 
-        words_dump_as_json_by_hash(resulting_dict, hash_from_content)
 
-    print(resulting_dict)
-    input('Press Enter to continue')
-
+def console_play_srt(resulting_dict: dict):
     loop_start_time = datetime.now()
     once_index = ''
 
@@ -253,3 +255,9 @@ if __name__ == '__main__':
             break
 
         time.sleep(0.2)  # Sleep to reduce CPU usage
+
+
+if __name__ == '__main__':
+    srt_filename = "Shrinking.S01E01.720p.WEB.x265-MiNX.srt"
+    print(extract_words(srt_filename))
+    pass

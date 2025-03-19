@@ -9,7 +9,8 @@ img_cache_folder_name = 'cache'
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    level=logging.INFO,
+    filename="./app.log"
 )
 
 
@@ -22,11 +23,9 @@ class Opnsub:
         self.headers = {
             "Content-Type": "application/json; charset=utf-8"
         }
-        requests_cache.install_cache(backend='filesystem', expire_after=600*3)
+        requests_cache.install_cache(backend='filesystem', expire_after=600 * 3)
 
-    import requests
-
-    def download_file(self, url: str, save_path: str):
+    def download_file(self, url: str, save_path: str) -> bool:
         """
         Downloads a file from the given URL and saves it to disk.
 
@@ -41,21 +40,23 @@ class Opnsub:
                 for chunk in response.iter_content(chunk_size=8192):
                     file.write(chunk)
 
-            print(f"File downloaded successfully: {save_path}")
+            logging.info(f"File downloaded successfully: {save_path}")
+            return True
         except requests.exceptions.RequestException as e:
-            print(f"Download failed: {e}")
+            logging.error(f"Download of {url} failed: {e}")
+            return False
 
-
-    def get_srt_download_url(self, file_id)->dict:
+    def get_srt_download_info(self, file_id: int) -> dict:
         api_url = self.api_url_base + '/download'
         headers = dict(self.headers)
         headers["Api-Key"] = self.opnsub_api_key
         headers["Accept"] = "application/json"
 
         params = {
-        "file_id": file_id}
+            "file_id": int(file_id)
+        }
 
-        logging.info(f"Subtitles call with p:{params}")
+        logging.info(f"get_srt_download_url: {params}")
         response = requests.post(api_url, headers=headers, params=params)
 
         if response.status_code == 200:
@@ -65,18 +66,49 @@ class Opnsub:
             logging.error(f"Error: {response.status_code}, {response.text}")
             return {}
 
-    def get_suggestions(self, query, showtype="Tvshow") -> list:
-        query = query.replace(' ', '+')
+    def fix_poster_url(self, url):
+        if 'http' not in url:
+            return 'https://opensubtitles.com' + url
+        else:
+            return url
+    def get_suggestions_old(self, query, show_type="tv"):
+        query = query.replace('"', ' ')
+        query = query.replace("'", ' ')
+        query = query.replace("&", ' ')
+        query = query.replace(' ', '%20')
+
+        response = requests.get(f"https://www.opensubtitles.org/libs/suggest.php?format=json3&MovieName={query}"
+                                f"&SubLanguageID=null",
+                                headers=self.headers)
+        if response.status_code == 200:
+            data = response.json()
+            result = []
+            for show in data:
+                if show["type"] == show_type:
+                    show["poster"] = self.fix_poster_url(show["poster"])
+                    result.append(show)
+            return result
+        else:
+            logging.error(f"{response.status_code}")
+            return []
+
+    def get_suggestions(self, query, show_type="Tvshow") -> list:
+
+        query = query.replace('"', ' ')
+        query = query.replace("'", ' ')
+        query = query.replace("&", ' ')
+        query = query.replace(' ', '%20')
 
         response = requests.get(f"https://www.opensubtitles.com/en/en/search/autocomplete/{query}.json",
                                 headers=self.headers)
 
         if response.status_code == 200:
             data = response.json()
+
             result = []
             for show in data:
-                if show["type"] == showtype:
-                    show["poster"] = opnsub_fix_poster_url(show["poster"])
+                if show["type"] == show_type:
+                    show["poster"] = self.fix_poster_url(show["poster"])
                     result.append(show)
             return result
         else:
@@ -144,33 +176,40 @@ def parse_episodes(opn_data: dict) -> dict:
     except KeyError:
         logging.error(f"Error: {opn_data['data']}")
         return res_dict
-    print(sorted_data)
+    logging.info(f"parse_episodes: {sorted_data}")
     for data in sorted_data:
         attrs = data['attributes']
         feature_details = attrs['feature_details']
-        files = attrs['files'][0] # TODO: detect right index
+        files = attrs['files'][0]  # TODO: detect right index
         if not attrs['hearing_impaired']:
             res_dict[feature_details['episode_number']] = {'id': data['id'],
                                                            'title': feature_details['title'],
-                                                           'file_id':files['file_id'],
-                                                           'file_name': files['file_name']+'.srt',}
-            # print(f"{feature_details['episode_number']} {feature_details['title']} {data['id']}")
+                                                           'file_id': files['file_id'],
+                                                           'file_name': files['file_name'] + '.srt', }
+
     return res_dict
 
+def srt_cached(file_name:str)->bool:
+    """
+    Checks if a .srt file with the given file_name exists in the current directory.
 
-def opnsub_fix_poster_url(url):
-    if 'http' not in url:
-        return 'https://opensubtitles.com' + url
-    else:
-        return url
+    :param file_name: Name of the file (including or excluding .srt extension)
+    :return: True if the file exists, False otherwise
+    """
+    if not file_name.endswith(".srt"):
+        file_name += ".srt"
 
+    return os.path.isfile(file_name)
 
 if __name__ == '__main__':
     opn = Opnsub()
     # print(opn.get_opnsub_suggestions("house of cards"))
+    suggestions = opn.get_suggestions_old('How I met your')
+    # 'https://www.opensubtitles.org/gfx/thumbs/4/9/0/6/13406094-t.jpg'
+    print(suggestions)
 
-    series_data = opn.get_srt_names(parent_feature_id=12809)
-    print(parse_episodes(series_data))
+    # series_data = opn.get_srt_names(parent_feature_id=12809)
+    # print(parse_episodes(series_data))
     # download_info = (opn.get_srt_download_url(9022929))
     # if download_info:
     #     opn.download_file(download_info['link'], download_info['file_name'])
