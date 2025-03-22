@@ -104,7 +104,7 @@ def get_words_by_timedelta(srt_timestamp: timedelta, resulting_dict: dict):
 
 def get_cleaned_srt_line(line: str) -> str:
     replacements = [
-        "<i>", "</i>", "- ", " -", "'s", "'d", "'ve", "'ll", "[", "]"
+        "<i>", "</i>", "- ", " -", "'s", "'d", "'ve", "'ll", "[", "]", "…"
     ]
 
     cleaned_text = line
@@ -203,7 +203,7 @@ def extract_words(srt_filename: str) -> dict:
                     if meaning:
                         meaning = meaning[0]
                     else:
-                        meaning = get_urbandictionaty_meaning(w) + ' [UD]'
+                        meaning = get_urbandictionaty_meaning(w) + ' _UD_'
                 try:
                     srt_freq_w = srt_freq_dist[w]
                 except KeyError:

@@ -145,9 +145,12 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         else:
             logging.info(f"Srt file cached! {file_name}")
         await query.message.reply_text(f"Start processing the text {title}")
+
         res = extract_words(file_name)
         if res:
-            await query.message.reply_text(f"Got {len(res)}")
+            for k in res.keys():
+                for l in res[k]:
+                    await query.message.reply_text(f"*{l['word']}* – {l['meaning']}", parse_mode='Markdown')
 
         return ConversationHandler.END
 

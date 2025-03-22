@@ -6,7 +6,7 @@ authors = ["YYlab <sxfF9DUbbvyY4sQ>"]
 readme = "README.md"
 
 [tool.poetry.dependencies]
-python = "^3.9"
+python = ">=3.9,<3.13"
 nltk = "^3.9.1"
 pattern = "^0.0.1a0"
 inflect = "^7.5.0"
@@ -15,7 +15,7 @@ requests = "^2.32.3"
 python-telegram-bot = "^21.10"
 requests-cache = "^1.2.1"
 mixpanel = "^4.10.1"
-
+spacy = "3.8.4"
 
 [build-system]
 requires = ["poetry-core"]

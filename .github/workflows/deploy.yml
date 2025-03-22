@@ -1,0 +1,31 @@
+
+name: Deploy to VPS
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Deploy to VPS
+        run: |
+          ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'EOF'
+          cd /home/telegrambot/pauseless/pauseless
+
+
+          # Ensure correct Python version
+          export PATH="\$HOME/.local/bin:\$PATH"
+          poetry env use python3
+
+          # Install dependencies based on poetry.lock and pyproject.toml
+          poetry install --no-root
+
+          # Restart the bot service
+          systemctl restart pauseless.service
+          EOF

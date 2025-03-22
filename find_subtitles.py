@@ -176,7 +176,7 @@ def parse_episodes(opn_data: dict) -> dict:
     except KeyError:
         logging.error(f"Error: {opn_data['data']}")
         return res_dict
-    logging.info(f"parse_episodes: {sorted_data}")
+    #logging.debug(f"parse_episodes: {sorted_data}")
     for data in sorted_data:
         attrs = data['attributes']
         feature_details = attrs['feature_details']
