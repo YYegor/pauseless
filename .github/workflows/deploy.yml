@@ -42,5 +42,5 @@ jobs:
           poetry install --no-root
 
           # Restart the bot service
-          systemctl restart pauseless.service
+          sudo systemctl restart pauseless.service
           EOF

@@ -125,7 +125,7 @@ def get_time_index(word: str, parsed_srt):
 
 
 def srt_parse_from_file(filename) -> dict:
-    with open(filename, 'r', encoding='utf-8-sig') as file:
+    with open(os.path.join(config.srt_cache_folder_name,filename), 'r', encoding='utf-8-sig') as file:
         content = file.read().strip()
 
     subtitles = {}

@@ -90,6 +90,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         mp.track(str(update.effective_chat.id), 'Show requested', {
             'show_id': show_id
         })
+        context.user_data["show_id"] = show_id
 
         episodes = get_episodes(int(show_id))
         if episodes:
@@ -145,18 +146,29 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                     await query.answer(f"Episode downloaded successfully.")
         else:
             logging.info(f"Srt file cached! {file_name}")
-        await query.message.reply_text(f"Start processing the text {title}")
+        await query.message.reply_text(f"Start processing the text of {title}")
+
 
         res = extract_words(file_name)
         if res:
             for k in res.keys():
                 for l in res[k]:
                     mark_popular = ''
+                    try:
+                        start_time = l['start'].split(",")[0]
+                    except (KeyError, IndexError) as e:
+                        start_time = l['start']
+
                     if l['freq_srt']>2:
                         mark_popular = '(popular)'
-                    await query.message.reply_text(f"🕑{l['start']} *{l['word']}* – {l['meaning']} {mark_popular}",
+                    await query.message.reply_text(f"🕑{start_time} *{l['word']}* – {l['meaning']} {mark_popular}",
                                                    parse_mode='Markdown')
-
+        else:
+            mp.track(str(update.effective_chat.id), 'Failed: Episode extraction', {
+                'episode_id': episode_id,
+                'title': title,
+                'show_id': context.user_data["show_id"]
+            })
         return ConversationHandler.END
 
 
