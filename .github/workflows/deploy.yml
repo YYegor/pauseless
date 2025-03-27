@@ -12,7 +12,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
-
+      - name: Debug secrets
+        run: |
+          echo "Connecting to: ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}"
       - name: Deploy to VPS
         run: |
           ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << EOF
