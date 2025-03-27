@@ -32,8 +32,7 @@ jobs:
         run: |
           ssh ${{ vars.VPS_USER }}@${{ vars.VPS_HOST }} << EOF
           cd /home/telegrambot/pauseless/pauseless
-
-
+          git pull origin main
           # Ensure correct Python version
           export PATH="\$HOME/.local/bin:\$PATH"
           poetry env use python3

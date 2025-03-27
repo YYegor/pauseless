@@ -61,10 +61,11 @@ def get_urbandictionaty_meaning(word):
             data = data['list'][0]['definition'].replace(']', '')
         except IndexError as e:
             logging.warning(f"UD: Can't find with {word}, {data}")
-            return 'None'
+            return 'unknown meaning'
         data = data.replace('[', '')
         data = data.replace('\n', '')
         data = data.replace('\r\r', ' ')
+        data = data.replace('"', '')
     if len(data) > 80:
         data = data[:80] + '...'
     return data
