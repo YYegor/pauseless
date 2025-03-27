@@ -18,6 +18,16 @@ jobs:
           echo "${{ vars.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H ${{ vars.VPS_HOST }} >> ~/.ssh/known_hosts
+
+      - name: 🔍 Debug SSH key info
+        run: |
+          echo "SSH key file details:"
+          ls -l ~/.ssh/id_rsa
+          echo "First few lines of key (sanitized):"
+          head -n 5 ~/.ssh/id_rsa | sed 's/./*/g'
+          echo "SHA256 Fingerprint:"
+          ssh-keygen -lf ~/.ssh/id_rsa || echo "Failed to parse key"
+
       - name: Deploy to VPS
         run: |
           ssh ${{ vars.VPS_USER }}@${{ vars.VPS_HOST }} << EOF

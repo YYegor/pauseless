@@ -5,7 +5,8 @@ import os
 import logging
 import requests_cache
 
-img_cache_folder_name = 'cache'
+img_cache_folder_name = 'cache_img'
+srt_cache_folder_name = 'cache_srt'
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -36,7 +37,7 @@ class Opnsub:
             response = requests.get(url, stream=True)
             response.raise_for_status()  # Raise an error for bad responses (4xx, 5xx)
 
-            with open(save_path, "wb") as file:
+            with open(os.path.join(srt_cache_folder_name, save_path), "wb") as file:
                 for chunk in response.iter_content(chunk_size=8192):
                     file.write(chunk)
 
@@ -199,12 +200,12 @@ def srt_cached(file_name:str)->bool:
     if not file_name.endswith(".srt"):
         file_name += ".srt"
 
-    return os.path.isfile(file_name)
+    return os.path.isfile(os.path.exists(os.path.join(srt_cache_folder_name, file_name)))
 
 if __name__ == '__main__':
     opn = Opnsub()
     # print(opn.get_opnsub_suggestions("house of cards"))
-    suggestions = opn.get_suggestions_old('How I met your')
+    suggestions = opn.get_suggestions('How I met your')
     # 'https://www.opensubtitles.org/gfx/thumbs/4/9/0/6/13406094-t.jpg'
     print(suggestions)
 
