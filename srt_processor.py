@@ -12,12 +12,12 @@ import time
 from datetime import datetime, timedelta
 import os
 import logging
-from find_subtitles import srt_cache_folder_name
+import config
 
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format=config.logs_format,
     level=logging.INFO,
-    filename="./app.log"
+    filename=config.logs_filename
 )
 
 nlp = spacy.load("en_core_web_sm")
@@ -34,7 +34,7 @@ def hash_srt_file(file_path, hash_algorithm="sha256"):
     """Calculate hash of an SRT file based on its content."""
     hasher = hashlib.new(hash_algorithm)
 
-    with open(os.path.join(srt_cache_folder_name, file_path), "rb") as f:
+    with open(os.path.join(config.srt_cache_folder_name, file_path), "rb") as f:
         while chunk := f.read(8192):  # Read in chunks for efficiency
             hasher.update(chunk)
 

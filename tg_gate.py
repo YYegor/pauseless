@@ -1,11 +1,12 @@
 import os
 import logging
+import config
 
 # Enable logging for debug info
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format=config.logs_format,
     level=logging.INFO,
-    filename="./app.log"
+    filename=config.logs_filename
 )
 
 from mixpanel import Mixpanel
@@ -150,7 +151,11 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         if res:
             for k in res.keys():
                 for l in res[k]:
-                    await query.message.reply_text(f"*{l['word']}* – {l['meaning']}", parse_mode='Markdown')
+                    mark_popular = ''
+                    if l['freq_srt']>2:
+                        mark_popular = '(popular)'
+                    await query.message.reply_text(f"🕑{l['start']} *{l['word']}* – {l['meaning']} {mark_popular}",
+                                                   parse_mode='Markdown')
 
         return ConversationHandler.END
 

@@ -4,14 +4,13 @@ from PIL import Image
 import os
 import logging
 import requests_cache
+import config
 
-img_cache_folder_name = 'cache_img'
-srt_cache_folder_name = 'cache_srt'
 
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format=config.logs_format,
     level=logging.INFO,
-    filename="./app.log"
+    filename=config.logs_filename
 )
 
 
@@ -37,7 +36,7 @@ class Opnsub:
             response = requests.get(url, stream=True)
             response.raise_for_status()  # Raise an error for bad responses (4xx, 5xx)
 
-            with open(os.path.join(srt_cache_folder_name, save_path), "wb") as file:
+            with open(os.path.join(config.srt_cache_folder_name, save_path), "wb") as file:
                 for chunk in response.iter_content(chunk_size=8192):
                     file.write(chunk)
 
@@ -148,7 +147,7 @@ def img_is_cached(filename_full) -> bool:
 def get_img_resized(input_path, new_height=100):
     filename = input_path.split('/')[-1].split('.')[0]
     filename_end = '_.jpg'
-    if img_is_cached(os.path.join(img_cache_folder_name, filename + filename_end)):
+    if img_is_cached(os.path.join(config.img_cache_folder_name, filename + filename_end)):
         pass
     else:
         response = requests.get(input_path)
@@ -165,8 +164,8 @@ def get_img_resized(input_path, new_height=100):
 
         img = img.resize((target_width, new_height), resample=Image.Resampling.BICUBIC)
         new_image.paste(img, (0, 0))
-        new_image.save(os.path.join(img_cache_folder_name, filename + filename_end), format="JPEG")
-    return os.path.join(img_cache_folder_name, filename + filename_end)
+        new_image.save(os.path.join(config.img_cache_folder_name, filename + filename_end), format="JPEG")
+    return os.path.join(config.img_cache_folder_name, filename + filename_end)
 
 
 def parse_episodes(opn_data: dict) -> dict:
@@ -200,7 +199,7 @@ def srt_cached(file_name:str)->bool:
     if not file_name.endswith(".srt"):
         file_name += ".srt"
 
-    return os.path.isfile(os.path.exists(os.path.join(srt_cache_folder_name, file_name)))
+    return os.path.isfile(os.path.exists(os.path.join(config.srt_cache_folder_name, file_name)))
 
 if __name__ == '__main__':
     opn = Opnsub()
