@@ -21,7 +21,8 @@ class Opnsub:
         self.opnsub_api_token = os.environ.get("OPNSUB_TOKEN")
         self.api_url_base = 'https://api.opensubtitles.com/api/v1'
         self.headers = {
-            "Content-Type": "application/json; charset=utf-8"
+            "Content-Type": "application/json; charset=utf-8",
+            "User-Agent": "pauseless1 1.1"
         }
         requests_cache.install_cache(backend='filesystem', expire_after=600 * 3)
 
@@ -208,8 +209,8 @@ if __name__ == '__main__':
     # 'https://www.opensubtitles.org/gfx/thumbs/4/9/0/6/13406094-t.jpg'
     print(suggestions)
 
-    # series_data = opn.get_srt_names(parent_feature_id=12809)
-    # print(parse_episodes(series_data))
+    series_data = opn.get_srt_names(parent_feature_id=7810)
+    print(parse_episodes(series_data))
     # download_info = (opn.get_srt_download_url(9022929))
     # if download_info:
     #     opn.download_file(download_info['link'], download_info['file_name'])
