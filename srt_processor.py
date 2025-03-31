@@ -66,6 +66,9 @@ def get_urbandictionaty_meaning(word):
         data = data.replace('\n', '')
         data = data.replace('\r\r', ' ')
         data = data.replace('"', '')
+        data = data.replace('`', """'""")
+
+
     if len(data) > 80:
         data = data[:80] + '...'
     return data
