@@ -22,7 +22,7 @@ class Opnsub:
         self.api_url_base = 'https://api.opensubtitles.com/api/v1'
         self.headers = {
             "Content-Type": "application/json; charset=utf-8",
-            "User-Agent": "pauseless1 1.1"
+            "User-Agent": "pauseless1 v1.1"
         }
         requests_cache.install_cache(backend='filesystem', expire_after=600 * 3)
 
