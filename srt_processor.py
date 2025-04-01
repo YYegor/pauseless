@@ -13,6 +13,9 @@ from datetime import datetime, timedelta
 import os
 import logging
 import config
+import asyncio
+
+SIMULT_LIMIT = 10
 
 logging.basicConfig(
     format=config.logs_format,
@@ -41,7 +44,7 @@ def hash_srt_file(file_path, hash_algorithm="sha256"):
     return hasher.hexdigest()
 
 
-def check_if_name(word) -> bool:
+async def check_if_name(word) -> bool:
     doc = nlp(word)
     first_names = [ent.text.split()[0] for ent in doc.ents if ent.label_ == "PERSON"]
     if first_names:
@@ -50,7 +53,17 @@ def check_if_name(word) -> bool:
         return False
 
 
-def get_urbandictionaty_meaning(word):
+async def escape_for_telegram_markup(text):
+    data = text.replace('[', '')
+    data = data.replace(']', '')
+    data = data.replace('\n', '')
+    data = data.replace('\r\r', ' ')
+    data = data.replace('"', '')
+    data = data.replace('`', """'""")
+    return data
+
+
+async def get_urbandictionary_meaning_async(word):
     url = f"https://api.urbandictionary.com/v0/define?term={word}"
     data = ''
     response = requests.get(url)
@@ -59,31 +72,27 @@ def get_urbandictionaty_meaning(word):
         data = response.json()
         try:
             data = data['list'][0]['definition'].replace(']', '')
-        except IndexError as e:
+        except IndexError:
             logging.warning(f"UD: Can't find with {word}, {data}")
             return 'unknown meaning'
-        data = data.replace('[', '')
-        data = data.replace('\n', '')
-        data = data.replace('\r\r', ' ')
-        data = data.replace('"', '')
-        data = data.replace('`', """'""")
 
+        data = await escape_for_telegram_markup(data)
 
     if len(data) > 80:
         data = data[:80] + '...'
     return data
 
 
-def get_meaning(word):
+async def get_meaning_wordnet_async(word):
     synsets = wordnet.synsets(word)
     meanings = [syn.definition() for syn in synsets]
     return meanings
 
 
-def get_wordnet_pos(word):
-    tag = nltk.pos_tag([word])[0][1][0].upper()  # Get POS tag
-    tag_dict = {"J": wordnet.ADJ, "N": wordnet.NOUN, "V": wordnet.VERB, "R": wordnet.ADV}
-    return tag_dict.get(tag, wordnet.NOUN)  # Default to NOUN if not found
+# def get_wordnet_pos(word):
+#     tag = nltk.pos_tag([word])[0][1][0].upper()  # Get POS tag
+#     tag_dict = {"J": wordnet.ADJ, "N": wordnet.NOUN, "V": wordnet.VERB, "R": wordnet.ADV}
+#     return tag_dict.get(tag, wordnet.NOUN)  # Default to NOUN if not found
 
 
 def get_words_by_timedelta(srt_timestamp: timedelta, resulting_dict: dict):
@@ -109,12 +118,12 @@ def get_words_by_timedelta(srt_timestamp: timedelta, resulting_dict: dict):
 
 def get_cleaned_srt_line(line: str) -> str:
     replacements = [
-        "<i>", "</i>", "- ", " -", "'s", "'d", "'ve", "'ll", "[", "]", "…"
+        "<i>", "</i>", "- ", " -", "'s", "'d", "'ve", "'ll", "[", "]", "…", "♪", '"', "$", "%", "—"
     ]
 
     cleaned_text = line
     for char in replacements:
-        cleaned_text = cleaned_text.replace(char, "")
+        cleaned_text = cleaned_text.replace(char, " ")
 
     cleaned_text = re.sub(r'\{\\an\d\}', '', cleaned_text)
 
@@ -129,7 +138,7 @@ def get_time_index(word: str, parsed_srt):
 
 
 def srt_parse_from_file(filename) -> dict:
-    with open(os.path.join(config.srt_cache_folder_name,filename), 'r', encoding='utf-8-sig') as file:
+    with open(os.path.join(config.srt_cache_folder_name, filename), 'r', encoding='utf-8-sig') as file:
         content = file.read().strip()
 
     subtitles = {}
@@ -167,7 +176,41 @@ def words_load_from_json_by_hash(content_hash: str) -> dict:
         return {}  # Return None if file doesn't exist
 
 
-def extract_words(srt_filename: str) -> dict:
+async def process_words(w: str, words_freq, srt_freq_dist, srt_dict: dict, sem):
+    print(w)
+    async with sem:
+        line_dict = {}
+        dictionary_type = 'default'
+        if words_freq[w] < 1:
+            if await check_if_name(w):
+                meaning = 'a name'
+            else:
+                meaning = await get_meaning_wordnet_async(w)
+                if meaning:
+                    meaning = await escape_for_telegram_markup(meaning[0])
+                else:
+                    meaning = await get_urbandictionary_meaning_async(w)
+                    dictionary_type = 'UD'
+            try:
+                srt_freq_w = srt_freq_dist[w]
+            except KeyError:
+                srt_freq_w = 0
+            period = get_time_index(w, srt_dict)
+            # TODO: currently,
+            # for escaped, cleared lines it is impossible to find their original
+            # timestamp. Required re-organizing of the structure.
+            if period:
+                line_dict = {'start': period[0],
+                             'end': period[1],
+                             'word': w,
+                             'meaning': meaning,
+                             'freq_srt': srt_freq_w,
+                             'dict': dictionary_type}
+
+    return line_dict
+
+
+async def extract_words(srt_filename: str) -> dict:
     try:
         hash_from_content = hash_srt_file(srt_filename)
     except FileNotFoundError:
@@ -197,30 +240,47 @@ def extract_words(srt_filename: str) -> dict:
             except KeyError:
                 words_freq[word] = -1
 
-        index = 1
+        # index = 1
+        #
+        # for w in words_freq:
+        #     dictionary_type = 'default'
+        #     if words_freq[w] < 1:
+        #         if await check_if_name(w):
+        #             meaning = 'a name'
+        #         else:
+        #             meaning = await get_meaning_wordnet_async(w)
+        #             if meaning:
+        #                 meaning = escape_for_telegram_markup(meaning[0])
+        #             else:
+        #                 meaning = get_urbandictionaty_meaning(w)
+        #                 dictionary_type = 'UD'
+        #         try:
+        #             srt_freq_w = srt_freq_dist[w]
+        #         except KeyError:
+        #             srt_freq_w = 0
+        #         period = get_time_index(w, srt_dict)
+        #         #TODO: currently,
+        #         # for escaped, cleared lines it is impossible to find their original
+        #         # timestamp. Required re-organizing of the structure.
+        #         if period:
+        #             resulting_dict.setdefault(period[0], []).append({'start': period[0],
+        #                                                          'end': period[1],
+        #                                                          'word': w,
+        #                                                          'meaning': meaning,
+        #                                                          'freq_srt': srt_freq_w,
+        #                                                          'dict': dictionary_type})
+        #
+        #         index += 1
+        #
+        sem = asyncio.Semaphore(SIMULT_LIMIT)
+        tasks = [process_words(w, words_freq, srt_freq_dist, srt_dict, sem) for w in words_freq]
+        results = await asyncio.gather(*tasks)  # Process words asynchronously
+        resulting_dict = {}
 
-        for w in words_freq:
-            if words_freq[w] < 1:
-                if check_if_name(w):
-                    meaning = 'a name'
-                else:
-                    meaning = get_meaning(w)
-                    if meaning:
-                        meaning = meaning[0]
-                    else:
-                        meaning = get_urbandictionaty_meaning(w) + ' _UD_'
-                try:
-                    srt_freq_w = srt_freq_dist[w]
-                except KeyError:
-                    srt_freq_w = 0
-                period = get_time_index(w, srt_dict)
-                resulting_dict.setdefault(period[0], []).append({'start': period[0],
-                                                                 'end': period[1],
-                                                                 'word': w,
-                                                                 'meaning': meaning,
-                                                                 'freq_srt': srt_freq_w})
+        for res in results:
+            if res:
+                resulting_dict.setdefault(res['start'], []).append(res)
 
-                index += 1
         try:
             words_dump_as_json_by_hash(resulting_dict, hash_from_content)
         except IOError as e:
@@ -230,7 +290,6 @@ def extract_words(srt_filename: str) -> dict:
 
 def console_play_srt(resulting_dict: dict):
     loop_start_time = datetime.now()
-    once_index = ''
 
     last_key = list(resulting_dict.keys())[-1]
     full_end_dt = datetime.strptime(resulting_dict[last_key][0]['end'], "%H:%M:%S,%f")
@@ -262,7 +321,11 @@ def console_play_srt(resulting_dict: dict):
         time.sleep(0.2)  # Sleep to reduce CPU usage
 
 
+async def mainroutine():
+    srt_filename = "Billions S01E01 Pilot.DVDRip.NonHI.en.SHOW.srt"
+
+    print(await extract_words(srt_filename))
+
+
 if __name__ == '__main__':
-    srt_filename = "Shrinking.S01E01.720p.WEB.x265-MiNX.srt"
-    print(extract_words(srt_filename))
-    pass
+    asyncio.run(mainroutine())

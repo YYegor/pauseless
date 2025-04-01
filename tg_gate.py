@@ -18,6 +18,8 @@ from telegram.ext import (
     filters,
     CallbackQueryHandler, CallbackContext, ConversationHandler, CommandHandler
 )
+from telegram.constants import ChatAction
+
 from find_subtitles import get_img_resized, parse_episodes, Opnsub, srt_cached
 from srt_processor import extract_words
 
@@ -75,6 +77,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     else:
         await update.message.reply_text("No suggestions. Try again")
+        mp.track(str(update.effective_chat.id), 'Warning: No suggestions', {
+            'query': user_query,
+        })
+    return ConversationHandler.END
 
 
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -95,22 +101,26 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         episodes = get_episodes(int(show_id))
         if episodes:
             context.user_data["episodes"] = episodes
-            await query.message.reply_text(f"Season 1:")
-            for episode in episodes:
-                keyboard = [
+            # await query.message.reply_text(f"Season 1:")
+
+            keyboard = [
                     [
-                        InlineKeyboardButton(f"Get episode",
+                        InlineKeyboardButton(f"🎥 {episodes[episode]['title']}",
                                              callback_data=f"episode_id:{episodes[episode]['id']}")
-                    ]
+                    ] for episode in episodes
                 ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                await query.message.reply_text(f"{episodes[episode]['title']}", reply_markup=reply_markup)
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.message.reply_text("Season 1:", reply_markup=reply_markup)
         else:
             await query.message.reply_text(f"Sorry, can't find episodes")
+            mp.track(str(update.effective_chat.id), 'Failed: Episodes not found', {
+                'show_id': show_id
+            })
             context.user_data["episodes"] = {}  # Reset if no episodes found
         return ConversationHandler.END
 
     if "episode_id" in query.data:
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
         episode_id = query.data.split("episode_id:")[1]
         logging.info(f"Episode data = {episode_id}")
 
@@ -124,9 +134,10 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         if not episodes:
             await query.message.reply_text("Something went wrong.")
             logging.error(f"Didn't find episodes data when called for episode {episode_id}")
-            return
+            return ConversationHandler.END
 
         await query.answer(f"Requesting episode data (id: {episode_id})")
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
 
         file_name = ''
         file_id = 0
@@ -137,8 +148,12 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                 file_id = int(episodes[episode]['file_id'])
                 title = episodes[episode]['title']
 
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+
         if not srt_cached(file_name):
             logging.info(f"Srt file is not cached {file_name}")
+            await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+
             download_info = opn.get_srt_download_info(file_id)
             if download_info:
                 logging.info(f"Download data acquired {download_info}")
@@ -146,10 +161,12 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                     await query.answer(f"Episode downloaded successfully.")
         else:
             logging.info(f"Srt file cached! {file_name}")
-        await query.message.reply_text(f"Start processing the text of {title}")
-
+        await query.message.reply_text(f"⏳ Processing the text of {title}")
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
 
         res = extract_words(file_name)
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+
         if res:
             for k in res.keys():
                 for l in res[k]:
@@ -160,7 +177,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                         start_time = l['start']
 
                     if l['freq_srt']>2:
-                        mark_popular = '(popular)'
+                        mark_popular = '(popular in episode)'
                     await query.message.reply_text(f"🕑{start_time} *{l['word']}* – {l['meaning']} {mark_popular}",
                                                    parse_mode='Markdown')
         else:
