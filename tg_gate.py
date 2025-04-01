@@ -164,7 +164,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         await query.message.reply_text(f"⏳ Processing the text of {title}")
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
 
-        res = extract_words(file_name)
+        res = await extract_words(file_name)
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
 
         if res:
