@@ -14,6 +14,9 @@ import os
 import logging
 import config
 import asyncio
+import requests_cache
+
+requests_cache.install_cache(backend='filesystem', expire_after=600 * 3)
 
 SIMULT_LIMIT = 10
 
@@ -177,7 +180,7 @@ def words_load_from_json_by_hash(content_hash: str) -> dict:
 
 
 async def process_words(w: str, words_freq, srt_freq_dist, srt_dict: dict, sem):
-    print(w)
+
     async with sem:
         line_dict = {}
         dictionary_type = 'default'
@@ -240,38 +243,6 @@ async def extract_words(srt_filename: str) -> dict:
             except KeyError:
                 words_freq[word] = -1
 
-        # index = 1
-        #
-        # for w in words_freq:
-        #     dictionary_type = 'default'
-        #     if words_freq[w] < 1:
-        #         if await check_if_name(w):
-        #             meaning = 'a name'
-        #         else:
-        #             meaning = await get_meaning_wordnet_async(w)
-        #             if meaning:
-        #                 meaning = escape_for_telegram_markup(meaning[0])
-        #             else:
-        #                 meaning = get_urbandictionaty_meaning(w)
-        #                 dictionary_type = 'UD'
-        #         try:
-        #             srt_freq_w = srt_freq_dist[w]
-        #         except KeyError:
-        #             srt_freq_w = 0
-        #         period = get_time_index(w, srt_dict)
-        #         #TODO: currently,
-        #         # for escaped, cleared lines it is impossible to find their original
-        #         # timestamp. Required re-organizing of the structure.
-        #         if period:
-        #             resulting_dict.setdefault(period[0], []).append({'start': period[0],
-        #                                                          'end': period[1],
-        #                                                          'word': w,
-        #                                                          'meaning': meaning,
-        #                                                          'freq_srt': srt_freq_w,
-        #                                                          'dict': dictionary_type})
-        #
-        #         index += 1
-        #
         sem = asyncio.Semaphore(SIMULT_LIMIT)
         tasks = [process_words(w, words_freq, srt_freq_dist, srt_dict, sem) for w in words_freq]
         results = await asyncio.gather(*tasks)  # Process words asynchronously

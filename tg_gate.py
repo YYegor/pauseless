@@ -1,7 +1,7 @@
 import os
 import logging
 import config
-
+import asyncio
 # Enable logging for debug info
 logging.basicConfig(
     format=config.logs_format,
@@ -180,6 +180,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                         mark_popular = '(popular in episode)'
                     await query.message.reply_text(f"🕑{start_time} *{l['word']}* – {l['meaning']} {mark_popular}",
                                                    parse_mode='Markdown')
+                    await asyncio.sleep(0.5)
         else:
             mp.track(str(update.effective_chat.id), 'Failed: Episode extraction', {
                 'episode_id': episode_id,
