@@ -322,7 +322,7 @@ def console_play_srt(resulting_dict: dict):
 
 
 async def mainroutine():
-    srt_filename = "Billions S01E01 Pilot.DVDRip.NonHI.en.SHOW.srt"
+    srt_filename = "Billions S01E06 The Deal.DVDRip.NonHI.en.SHOW.srt"
 
     print(await extract_words(srt_filename))
 
