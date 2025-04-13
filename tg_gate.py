@@ -2,6 +2,7 @@ import os
 import logging
 import config
 import asyncio
+
 # Enable logging for debug info
 logging.basicConfig(
     format=config.logs_format,
@@ -23,7 +24,6 @@ from telegram.constants import ChatAction
 from find_subtitles import get_img_resized, parse_episodes, Opnsub, srt_cached
 from srt_processor import extract_words
 
-
 TG_BOT_KEY = os.environ.get('TG_BOT_KEY')
 opn = Opnsub()
 
@@ -32,13 +32,37 @@ mp = Mixpanel(MIXPANEL_TOKEN)
 logging.info('Mixpanel initialized')
 
 
+async def get_top_series(update: Update, context: CallbackContext):
+    response_dict = {"1340460": {'caption': 'Severance (2022)'},
+                     "8882": {'caption': 'Breaking Bad (2008)'},
+                     "1299348": {'caption': 'Squid Game (2021)'},
+                     "1434916" : {'caption': 'Shrinking (2023)'},
+                     "7160" : {'caption': 'South Park (1997)'},
+                     }
+
+    keyboard = [
+        [
+            InlineKeyboardButton(f"{response_dict[k]['caption']}",
+                                 callback_data=f"show_id:{k}")
+        ] for k in response_dict
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await update.message.reply_text("Select one of the top series right now", reply_markup=reply_markup)
+    return ConversationHandler.END
+
+
 async def start(update: Update, context: CallbackContext):
     user_id = update.message.chat_id
     mp.track(str(user_id), 'Bot Started', {
         'username': update.message.from_user.username,
         'first_name': update.message.from_user.first_name
     })
-    await update.message.reply_text("Welcome.")
+    await update.message.reply_text("Welcome!")
+    await get_top_series(update, context)
+
+    await update.message.reply_text("or start by typing TV series name.")
+    return ConversationHandler.END
 
 
 def suggestion_wrapper(get_opnsub_suggestions_data: list):
@@ -58,6 +82,8 @@ def get_episodes(show_id: int, season=1) -> None | dict:
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_query = update.message.text
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+
     suggestions = opn.get_suggestions(user_query)
     response_dict = suggestion_wrapper(suggestions)
 
@@ -76,11 +102,117 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                                  reply_markup=reply_markup)
 
     else:
-        await update.message.reply_text("No suggestions. Try again")
+        await update.message.reply_text("😿 No suggestions. Try again")
         mp.track(str(update.effective_chat.id), 'Warning: No suggestions', {
             'query': user_query,
         })
     return ConversationHandler.END
+
+
+async def cb_handler_show_id(update: Update, context: CallbackContext):
+    query = update.callback_query
+    show_id = query.data.split("show_id:")[1]
+
+    mp.track(str(update.effective_chat.id), 'Show requested', {
+        'show_id': show_id
+    })
+    context.user_data["show_id"] = show_id
+
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+
+    episodes = get_episodes(int(show_id))
+    if episodes:
+        context.user_data["episodes"] = episodes
+        # await query.message.reply_text(f"Season 1:")
+
+        keyboard = [
+            [
+                InlineKeyboardButton(f"🎥 {episodes[episode]['title']}",
+                                     callback_data=f"episode_id:{episodes[episode]['id']}")
+            ] for episode in episodes
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.message.reply_text("Season 1:", reply_markup=reply_markup)
+    else:
+        await query.message.reply_text(f"Sorry, can't find episodes")
+        mp.track(str(update.effective_chat.id), 'Failed: Episodes not found', {
+            'show_id': show_id
+        })
+        context.user_data["episodes"] = {}  # Reset if no episodes found
+    return
+
+
+async def cb_handler_episode_id(update: Update, context: CallbackContext):
+    query = update.callback_query
+
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+    episode_id = query.data.split("episode_id:")[1]
+    logging.info(f"Episode data = {episode_id}")
+
+    mp.track(str(update.effective_chat.id), 'Episode requested', {
+        'episode_id': episode_id
+    })
+
+    episodes = context.user_data.get("episodes", {})
+
+    # Ensure episode exists in stored data
+    if not episodes:
+        await query.message.reply_text("Something went wrong.")
+        logging.error(f"Didn't find episodes data when called for episode {episode_id}")
+        return ConversationHandler.END
+
+    await query.answer(f"Requesting episode data (id: {episode_id})")
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+
+    file_name = ''
+    file_id = 0
+    title = ''
+    for episode in episodes:
+        if episode_id == episodes[episode]['id']:
+            file_name = episodes[episode]['file_name']
+            file_id = int(episodes[episode]['file_id'])
+            title = episodes[episode]['title']
+
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+
+    if not srt_cached(file_name):
+        logging.info(f"Srt file is not cached {file_name}")
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+
+        download_info = opn.get_srt_download_info(file_id)
+        if download_info:
+            logging.info(f"Download data acquired {download_info}")
+            if opn.download_file(download_info['link'], download_info['file_name']):
+                await query.answer(f"Episode downloaded successfully.")
+    else:
+        logging.info(f"Srt file cached! {file_name}")
+    await query.message.reply_text(f"⏳ Processing the text of {title}. It may take a while...")
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+
+    res = await extract_words(file_name)
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+
+    if res:
+        for k in res.keys():
+            for l in res[k]:
+                mark_popular = ''
+                try:
+                    start_time = l['start'].split(",")[0]
+                except (KeyError, IndexError) as e:
+                    start_time = l['start']
+
+                if l['freq_srt'] > 2:
+                    mark_popular = '(popular in episode)'
+                await query.message.reply_text(f"🕑{start_time} *{l['word']}* – {l['meaning']} {mark_popular}",
+                                               parse_mode='Markdown')
+                await asyncio.sleep(0.5)
+    else:
+        mp.track(str(update.effective_chat.id), 'Failed: Episode extraction', {
+            'episode_id': episode_id,
+            'title': title,
+            'show_id': context.user_data["show_id"]
+        })
+    return
 
 
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -91,107 +223,15 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     logging.info(f"Callback data = {query.data}")
 
     if "show_id" in query.data:
-        show_id = query.data.split("show_id:")[1]
-
-        mp.track(str(update.effective_chat.id), 'Show requested', {
-            'show_id': show_id
-        })
-        context.user_data["show_id"] = show_id
-
-        episodes = get_episodes(int(show_id))
-        if episodes:
-            context.user_data["episodes"] = episodes
-            # await query.message.reply_text(f"Season 1:")
-
-            keyboard = [
-                    [
-                        InlineKeyboardButton(f"🎥 {episodes[episode]['title']}",
-                                             callback_data=f"episode_id:{episodes[episode]['id']}")
-                    ] for episode in episodes
-                ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.message.reply_text("Season 1:", reply_markup=reply_markup)
-        else:
-            await query.message.reply_text(f"Sorry, can't find episodes")
-            mp.track(str(update.effective_chat.id), 'Failed: Episodes not found', {
-                'show_id': show_id
-            })
-            context.user_data["episodes"] = {}  # Reset if no episodes found
+        await cb_handler_show_id(update, context)
         return ConversationHandler.END
 
     if "episode_id" in query.data:
-        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-        episode_id = query.data.split("episode_id:")[1]
-        logging.info(f"Episode data = {episode_id}")
-
-        mp.track(str(update.effective_chat.id), 'Episode requested', {
-            'episode_id': episode_id
-        })
-
-        episodes = context.user_data.get("episodes", {})
-
-        # Ensure episode exists in stored data
-        if not episodes:
-            await query.message.reply_text("Something went wrong.")
-            logging.error(f"Didn't find episodes data when called for episode {episode_id}")
-            return ConversationHandler.END
-
-        await query.answer(f"Requesting episode data (id: {episode_id})")
-        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-
-        file_name = ''
-        file_id = 0
-        title = ''
-        for episode in episodes:
-            if episode_id == episodes[episode]['id']:
-                file_name = episodes[episode]['file_name']
-                file_id = int(episodes[episode]['file_id'])
-                title = episodes[episode]['title']
-
-        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-
-        if not srt_cached(file_name):
-            logging.info(f"Srt file is not cached {file_name}")
-            await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-
-            download_info = opn.get_srt_download_info(file_id)
-            if download_info:
-                logging.info(f"Download data acquired {download_info}")
-                if opn.download_file(download_info['link'], download_info['file_name']):
-                    await query.answer(f"Episode downloaded successfully.")
-        else:
-            logging.info(f"Srt file cached! {file_name}")
-        await query.message.reply_text(f"⏳ Processing the text of {title}")
-        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-
-        res = await extract_words(file_name)
-        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-
-        if res:
-            for k in res.keys():
-                for l in res[k]:
-                    mark_popular = ''
-                    try:
-                        start_time = l['start'].split(",")[0]
-                    except (KeyError, IndexError) as e:
-                        start_time = l['start']
-
-                    if l['freq_srt']>2:
-                        mark_popular = '(popular in episode)'
-                    await query.message.reply_text(f"🕑{start_time} *{l['word']}* – {l['meaning']} {mark_popular}",
-                                                   parse_mode='Markdown')
-                    await asyncio.sleep(0.5)
-        else:
-            mp.track(str(update.effective_chat.id), 'Failed: Episode extraction', {
-                'episode_id': episode_id,
-                'title': title,
-                'show_id': context.user_data["show_id"]
-            })
+        await cb_handler_episode_id(update, context)
         return ConversationHandler.END
 
 
 def main():
-
     application = ApplicationBuilder().token(TG_BOT_KEY).build()
 
     # Handler for any text message
