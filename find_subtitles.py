@@ -6,7 +6,6 @@ import logging
 import requests_cache
 import config
 
-
 logging.basicConfig(
     format=config.logs_format,
     level=logging.INFO,
@@ -72,6 +71,7 @@ class Opnsub:
             return 'https://opensubtitles.com' + url
         else:
             return url
+
     def get_suggestions_old(self, query, show_type="tv"):
         query = query.replace('"', ' ')
         query = query.replace("'", ' ')
@@ -145,7 +145,7 @@ def img_is_cached(filename_full) -> bool:
         return False
 
 
-def get_img_resized(input_path, new_height=100):
+def get_img_resized(input_path, new_height=config.chat_preview_height):
     filename = input_path.split('/')[-1].split('.')[0]
     filename_end = '_.jpg'
     if img_is_cached(os.path.join(config.img_cache_folder_name, filename + filename_end)):
@@ -163,9 +163,14 @@ def get_img_resized(input_path, new_height=100):
         target_width = int((new_height / height) * width)
         new_image = Image.new("RGB", (200, new_height), (0, 0, 0))
 
-        img = img.resize((target_width, new_height), resample=Image.Resampling.BICUBIC)
+        img = img.resize((target_width, new_height), resample=Image.Resampling.LANCZOS)
         new_image.paste(img, (0, 0))
-        new_image.save(os.path.join(config.img_cache_folder_name, filename + filename_end), format="JPEG")
+        try:
+            new_image.save(os.path.join(config.img_cache_folder_name, filename + filename_end), format="JPEG",
+                           quality=100)
+        except IOError as e:
+            logging.error(f"Error: {e} while saving {filename}")
+
     return os.path.join(config.img_cache_folder_name, filename + filename_end)
 
 
@@ -177,7 +182,7 @@ def parse_episodes(opn_data: dict) -> dict:
     except KeyError:
         logging.error(f"Error: {opn_data['data']}")
         return res_dict
-    #logging.debug(f"parse_episodes: {sorted_data}")
+    # logging.debug(f"parse_episodes: {sorted_data}")
     for data in sorted_data:
         attrs = data['attributes']
         feature_details = attrs['feature_details']
@@ -190,7 +195,8 @@ def parse_episodes(opn_data: dict) -> dict:
 
     return res_dict
 
-def srt_cached(file_name:str)->bool:
+
+def srt_cached(file_name: str) -> bool:
     """
     Checks if a .srt file with the given file_name exists in the current directory.
 
@@ -202,15 +208,17 @@ def srt_cached(file_name:str)->bool:
 
     return os.path.isfile(os.path.exists(os.path.join(config.srt_cache_folder_name, file_name)))
 
+
 if __name__ == '__main__':
     opn = Opnsub()
     # print(opn.get_opnsub_suggestions("house of cards"))
-    suggestions = opn.get_suggestions('How I met your')
+    suggestions = opn.get_suggestions('South Park')
     # 'https://www.opensubtitles.org/gfx/thumbs/4/9/0/6/13406094-t.jpg'
     print(suggestions)
 
-    series_data = opn.get_srt_names(parent_feature_id=7810)
-    print(parse_episodes(series_data))
+    # "https://www.opensubtitles.com/nocache/search/en?current_languages=all&episode_number=all&hearing_impaired=hearing_impaired-1&machine_translated=machine_translated-1&q=osdb%3A1180031&search_in=tvshows&season_number=all&trusted_sources=trusted_sources-1"
+    # series_data = opn.get_srt_names(parent_feature_id=7160)
+    # print(parse_episodes(series_data))
     # download_info = (opn.get_srt_download_url(9022929))
     # if download_info:
     #     opn.download_file(download_info['link'], download_info['file_name'])
