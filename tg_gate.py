@@ -10,6 +10,7 @@ logging.basicConfig(
     level=logging.INFO,
     filename=config.logs_filename
 )
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 from mixpanel import Mixpanel
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup

@@ -228,7 +228,12 @@ async def extract_words(srt_filename: str) -> dict:
         srt_dict = srt_parse_from_file(srt_filename)
         words = []
         for i in range(1, len(srt_dict)):
-            clean_text = get_cleaned_srt_line(srt_dict[i]['text'])
+            try:
+                clean_text = get_cleaned_srt_line(srt_dict[i]['text'])
+            except KeyError:
+                logging.error(f"{srt_filename} doesnt have {i} line")
+                continue
+
             for word in clean_text.split():
                 words.append(word)
 
@@ -293,7 +298,7 @@ def console_play_srt(resulting_dict: dict):
 
 
 async def mainroutine():
-    srt_filename = "Billions S01E06 The Deal.DVDRip.NonHI.en.SHOW.srt"
+    srt_filename = "Breaking.Bad.s01e02.DUAL.BDRip.XviD.AC3-eng.srt"
 
     print(await extract_words(srt_filename))
 
