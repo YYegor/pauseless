@@ -2,6 +2,7 @@ import os
 import logging
 import config
 import asyncio
+from telegram import BotCommand
 
 # Enable logging for debug info
 logging.basicConfig(
@@ -42,13 +43,15 @@ async def get_top_series(update: Update, context: CallbackContext):
 
     keyboard = [
         [
-            InlineKeyboardButton(f"{response_dict[k]['caption']}",
+            InlineKeyboardButton(f"⭐ {response_dict[k]['caption']}",
                                  callback_data=f"show_id:{k}")
         ] for k in response_dict
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    await update.message.reply_text("Select one of the top series right now", reply_markup=reply_markup)
+    await update.message.reply_text(f"I'll prep your vocab so you won't need to pause while watching.\n"
+                                    f"Are you watching one of these hits?", reply_markup=reply_markup)
+    await update.message.reply_text("Or let me help to find other shows. Just type the name.")
     return ConversationHandler.END
 
 
@@ -58,12 +61,25 @@ async def start(update: Update, context: CallbackContext):
         'username': update.message.from_user.username,
         'first_name': update.message.from_user.first_name
     })
-    await update.message.reply_text("Welcome!")
+    context.user_data["feedback_input_flag"] = False
+    user_first_name = update.message.from_user.first_name or ''
+    if user_first_name:
+        user_first_name = ', ' + user_first_name
+    await update.message.reply_text(f"Hi{user_first_name}!")
     await get_top_series(update, context)
 
-    await update.message.reply_text("or start by typing TV series name.")
+
     return ConversationHandler.END
 
+async def feedback(update: Update, context: CallbackContext):
+    context.user_data["feedback_input_flag"] = True
+
+    user_first_name = update.message.from_user.first_name or ''
+    if user_first_name:
+        user_first_name = ', ' + user_first_name
+    await update.message.reply_text(f"Your feedback is very valuable{user_first_name}! Please type in your feedback here:")
+
+    return ConversationHandler.END
 
 def suggestion_wrapper(get_opnsub_suggestions_data: list):
     if get_opnsub_suggestions_data:
@@ -82,8 +98,23 @@ def get_episodes(show_id: int, season=1) -> None | dict:
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_query = update.message.text
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+    if context.user_data.get("feedback_input_flag"):
+        mp.track(str(update.message.chat_id), 'Feedback', {
+            'username': update.message.from_user.username,
+            'first_name': update.message.from_user.first_name,
+            'feedback_text': str(user_query),
+            'last_show_id': context.user_data.get("show_id") or '',
+            'last_episode_id': context.user_data.get("episode_id") or ''
 
+        })
+        context.user_data["feedback_input_flag"] = False
+        await update.message.reply_text("Sent! 🙏",reply_markup=None)
+        return ConversationHandler.END
+
+
+    await update.message.reply_text("Looking...",reply_markup=None)
+
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
     suggestions = opn.get_suggestions(user_query)
     response_dict = suggestion_wrapper(suggestions)
 
@@ -110,6 +141,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cb_handler_show_id(update: Update, context: CallbackContext):
+    context.user_data["feedback_input_flag"] = False
     query = update.callback_query
     show_id = query.data.split("show_id:")[1]
 
@@ -117,6 +149,8 @@ async def cb_handler_show_id(update: Update, context: CallbackContext):
         'show_id': show_id
     })
     context.user_data["show_id"] = show_id
+
+    await query.message.reply_text("Great choice! Looking for episodes...", reply_markup=None)
 
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
 
@@ -133,6 +167,7 @@ async def cb_handler_show_id(update: Update, context: CallbackContext):
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.message.reply_text("Season 1:", reply_markup=reply_markup)
+        await query.message.reply_text("Tap to explore the vocab.", reply_markup=None)
     else:
         await query.message.reply_text(f"Sorry, can't find episodes")
         mp.track(str(update.effective_chat.id), 'Failed: Episodes not found', {
@@ -143,6 +178,7 @@ async def cb_handler_show_id(update: Update, context: CallbackContext):
 
 
 async def cb_handler_episode_id(update: Update, context: CallbackContext):
+    context.user_data["feedback_input_flag"] = False
     query = update.callback_query
 
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
@@ -157,7 +193,13 @@ async def cb_handler_episode_id(update: Update, context: CallbackContext):
 
     # Ensure episode exists in stored data
     if not episodes:
-        await query.message.reply_text("Something went wrong.")
+        await query.message.reply_text("Something went wrong. It's not you, it's me.")
+
+        mp.track(str(update.effective_chat.id), 'Warning: no episodes yielded', {
+            'episode_id': episode_id,
+            'show_id': context.user_data["show_id"]
+        })
+
         logging.error(f"Didn't find episodes data when called for episode {episode_id}")
         return ConversationHandler.END
 
@@ -223,13 +265,24 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     logging.info(f"Callback data = {query.data}")
 
     if "show_id" in query.data:
-        await cb_handler_show_id(update, context)
+        context.application.create_task(cb_handler_show_id(update, context))
+
+        #await cb_handler_show_id(update, context)
         return ConversationHandler.END
 
     if "episode_id" in query.data:
-        await cb_handler_episode_id(update, context)
+        context.application.create_task(cb_handler_episode_id(update, context))
+
+        #await cb_handler_episode_id(update, context)
         return ConversationHandler.END
 
+async def set_bot_commands(application):
+    commands = [
+        BotCommand("feedback", "Send feedback"),
+        BotCommand("start", "Restart the bot"),
+        # Add more commands here
+    ]
+    await application.bot.set_my_commands(commands)
 
 def main():
     application = ApplicationBuilder().token(TG_BOT_KEY).build()
@@ -243,6 +296,8 @@ def main():
         CallbackQueryHandler(handle_callback_query)
     )
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("feedback", feedback))
+    application.post_init = set_bot_commands
 
     application.run_polling()
 
