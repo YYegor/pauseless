@@ -34,12 +34,20 @@ mp = Mixpanel(MIXPANEL_TOKEN)
 logging.info('Mixpanel initialized')
 
 
-async def get_top_series(update: Update, context: CallbackContext):
+def safe_track(mixpanel, *args, **kwargs):
+    try:
+        mixpanel.track(*args, **kwargs)
+    except Exception as e:
+        # Optional: log the error
+        logging.warning(f"Mixpanel tracking failed: {e}")
+
+
+async def get_top_series(update: Update):
     response_dict = {"1340460": {'caption': 'Severance (2022)'},
                      "8882": {'caption': 'Breaking Bad (2008)'},
                      "1299348": {'caption': 'Squid Game (2021)'},
-                     "1434916" : {'caption': 'Shrinking (2023)'},
-                     "7160" : {'caption': 'South Park (1997)'},
+                     "1434916": {'caption': 'Shrinking (2023)'},
+                     "7160": {'caption': 'South Park (1997)'},
                      }
 
     keyboard = [
@@ -58,7 +66,7 @@ async def get_top_series(update: Update, context: CallbackContext):
 
 async def start(update: Update, context: CallbackContext):
     user_id = update.message.chat_id
-    mp.track(str(user_id), 'Bot Started', {
+    safe_track(mp, str(user_id), 'Bot Started', {
         'username': update.message.from_user.username,
         'first_name': update.message.from_user.first_name
     })
@@ -67,10 +75,10 @@ async def start(update: Update, context: CallbackContext):
     if user_first_name:
         user_first_name = ', ' + user_first_name
     await update.message.reply_text(f"Hi{user_first_name}!")
-    await get_top_series(update, context)
-
+    await get_top_series(update)
 
     return ConversationHandler.END
+
 
 async def feedback(update: Update, context: CallbackContext):
     context.user_data["feedback_input_flag"] = True
@@ -78,9 +86,11 @@ async def feedback(update: Update, context: CallbackContext):
     user_first_name = update.message.from_user.first_name or ''
     if user_first_name:
         user_first_name = ', ' + user_first_name
-    await update.message.reply_text(f"Your feedback is very valuable{user_first_name}! Please type in your feedback here:")
+    await update.message.reply_text(
+        f"Your feedback is very valuable{user_first_name}! Please type in your feedback here:")
 
     return ConversationHandler.END
+
 
 def suggestion_wrapper(get_opnsub_suggestions_data: list):
     if get_opnsub_suggestions_data:
@@ -100,7 +110,7 @@ def get_episodes(show_id: int, season=1) -> None | dict:
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_query = update.message.text
     if context.user_data.get("feedback_input_flag"):
-        mp.track(str(update.message.chat_id), 'Feedback', {
+        safe_track(mp, str(update.message.chat_id), 'Feedback', {
             'username': update.message.from_user.username,
             'first_name': update.message.from_user.first_name,
             'feedback_text': str(user_query),
@@ -109,11 +119,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         })
         context.user_data["feedback_input_flag"] = False
-        await update.message.reply_text("Sent! 🙏",reply_markup=None)
+        await update.message.reply_text("Sent! 🙏", reply_markup=None)
         return ConversationHandler.END
 
-
-    await update.message.reply_text("Looking...",reply_markup=None)
+    await update.message.reply_text("Looking...", reply_markup=None)
 
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
     suggestions = opn.get_suggestions(user_query)
@@ -135,7 +144,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     else:
         await update.message.reply_text("😿 No suggestions. Try again")
-        mp.track(str(update.effective_chat.id), 'Warning: No suggestions', {
+        safe_track(mp, str(update.effective_chat.id), 'Warning: No suggestions', {
             'query': user_query,
         })
     return ConversationHandler.END
@@ -146,7 +155,7 @@ async def cb_handler_show_id(update: Update, context: CallbackContext):
     query = update.callback_query
     show_id = query.data.split("show_id:")[1]
 
-    mp.track(str(update.effective_chat.id), 'Show requested', {
+    safe_track(mp, str(update.effective_chat.id), 'Show requested', {
         'show_id': show_id
     })
     context.user_data["show_id"] = show_id
@@ -171,7 +180,7 @@ async def cb_handler_show_id(update: Update, context: CallbackContext):
         await query.message.reply_text("Tap to explore the vocab.", reply_markup=None)
     else:
         await query.message.reply_text(f"Sorry, can't find episodes")
-        mp.track(str(update.effective_chat.id), 'Failed: Episodes not found', {
+        safe_track(mp, str(update.effective_chat.id), 'Failed: Episodes not found', {
             'show_id': show_id
         })
         context.user_data["episodes"] = {}  # Reset if no episodes found
@@ -186,17 +195,16 @@ async def cb_handler_episode_id(update: Update, context: CallbackContext):
     episode_id = query.data.split("episode_id:")[1]
     logging.info(f"Episode data = {episode_id}")
 
-    mp.track(str(update.effective_chat.id), 'Episode requested', {
+    safe_track(mp, str(update.effective_chat.id), 'Episode requested', {
         'episode_id': episode_id
     })
 
     episodes = context.user_data.get("episodes", {})
 
-    # Ensure episode exists in stored data
     if not episodes:
-        await query.message.reply_text("Something went wrong. It's not you, it's me.")
+        await query.message.reply_text("☁️ Something went wrong. It's not you, it's me.")
 
-        mp.track(str(update.effective_chat.id), 'Warning: no episodes yielded', {
+        safe_track(mp, str(update.effective_chat.id), 'Warning: no episodes yielded', {
             'episode_id': episode_id,
             'show_id': context.user_data["show_id"]
         })
@@ -204,7 +212,7 @@ async def cb_handler_episode_id(update: Update, context: CallbackContext):
         logging.error(f"Didn't find episodes data when called for episode {episode_id}")
         return ConversationHandler.END
 
-    await query.answer(f"Requesting episode data (id: {episode_id})")
+    # await query.answer(f"Requesting episode data (id: {episode_id})")
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
 
     file_name = ''
@@ -232,7 +240,17 @@ async def cb_handler_episode_id(update: Update, context: CallbackContext):
     await query.message.reply_text(f"⏳ Processing the text of {title}. It may take a while...")
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
 
-    res = await extract_words(file_name)
+    try:
+        res = await extract_words(file_name)
+    except Exception as e:
+        logging.error(f"Error {e} while extracting  {file_name}")
+        safe_track(mp, str(update.effective_chat.id), 'Error', {
+            'filename': file_name,
+            'action': 'extract_words'
+        })
+        await query.message.reply_text("☁️ Something went wrong. It's not you, it's me.")
+        return ConversationHandler.END
+
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
 
     if res:
@@ -241,7 +259,7 @@ async def cb_handler_episode_id(update: Update, context: CallbackContext):
                 mark_popular = ''
                 try:
                     start_time = l['start'].split(",")[0]
-                except (KeyError, IndexError) as e:
+                except (KeyError, IndexError):
                     start_time = l['start']
 
                 if l['freq_srt'] > 2:
@@ -250,7 +268,7 @@ async def cb_handler_episode_id(update: Update, context: CallbackContext):
                                                parse_mode='Markdown')
                 await asyncio.sleep(0.5)
     else:
-        mp.track(str(update.effective_chat.id), 'Failed: Episode extraction', {
+        safe_track(mp, str(update.effective_chat.id), 'Failed: Episode extraction', {
             'episode_id': episode_id,
             'title': title,
             'show_id': context.user_data["show_id"]
@@ -268,14 +286,15 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     if "show_id" in query.data:
         context.application.create_task(cb_handler_show_id(update, context))
 
-        #await cb_handler_show_id(update, context)
+        # await cb_handler_show_id(update, context)
         return ConversationHandler.END
 
     if "episode_id" in query.data:
         context.application.create_task(cb_handler_episode_id(update, context))
 
-        #await cb_handler_episode_id(update, context)
+        # await cb_handler_episode_id(update, context)
         return ConversationHandler.END
+
 
 async def set_bot_commands(application):
     commands = [
@@ -284,6 +303,7 @@ async def set_bot_commands(application):
         # Add more commands here
     ]
     await application.bot.set_my_commands(commands)
+
 
 def main():
     application = ApplicationBuilder().token(TG_BOT_KEY).build()
