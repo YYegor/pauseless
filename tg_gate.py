@@ -66,9 +66,15 @@ async def get_top_series(update: Update):
 
 async def start(update: Update, context: CallbackContext):
     user_id = update.message.chat_id
+    args = context.args
+    param = ''
+    if args:
+        param = args[0]
+
     safe_track(mp, str(user_id), 'Bot Started', {
         'username': update.message.from_user.username,
-        'first_name': update.message.from_user.first_name
+        'first_name': update.message.from_user.first_name,
+        'start_parameter': param
     })
     context.user_data["feedback_input_flag"] = False
     user_first_name = update.message.from_user.first_name or ''
