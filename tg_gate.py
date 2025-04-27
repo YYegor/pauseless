@@ -66,9 +66,15 @@ async def get_top_series(update: Update):
 
 async def start(update: Update, context: CallbackContext):
     user_id = update.message.chat_id
+    args = context.args
+    param = ''
+    if args:
+        param = args[0]
+
     safe_track(mp, str(user_id), 'Bot Started', {
         'username': update.message.from_user.username,
-        'first_name': update.message.from_user.first_name
+        'first_name': update.message.from_user.first_name,
+        'start_parameter': param
     })
     context.user_data["feedback_input_flag"] = False
     user_first_name = update.message.from_user.first_name or ''
@@ -195,10 +201,6 @@ async def cb_handler_episode_id(update: Update, context: CallbackContext):
     episode_id = query.data.split("episode_id:")[1]
     logging.info(f"Episode data = {episode_id}")
 
-    safe_track(mp, str(update.effective_chat.id), 'Episode requested', {
-        'episode_id': episode_id
-    })
-
     episodes = context.user_data.get("episodes", {})
 
     if not episodes:
@@ -211,6 +213,10 @@ async def cb_handler_episode_id(update: Update, context: CallbackContext):
 
         logging.error(f"Didn't find episodes data when called for episode {episode_id}")
         return ConversationHandler.END
+
+    safe_track(mp, str(update.effective_chat.id), 'Episode request success', {
+        'episode_id': episode_id
+    })
 
     # await query.answer(f"Requesting episode data (id: {episode_id})")
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
@@ -237,6 +243,7 @@ async def cb_handler_episode_id(update: Update, context: CallbackContext):
                 await query.answer(f"Episode downloaded successfully.")
     else:
         logging.info(f"Srt file cached! {file_name}")
+
     await query.message.reply_text(f"⏳ Processing the text of {title}. It may take a while...")
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
 
@@ -254,27 +261,31 @@ async def cb_handler_episode_id(update: Update, context: CallbackContext):
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
 
     if res:
-        for k in res.keys():
-            for l in res[k]:
-                mark_popular = ''
-                try:
-                    start_time = l['start'].split(",")[0]
-                except (KeyError, IndexError):
-                    start_time = l['start']
-
-                if l['freq_srt'] > 2:
-                    mark_popular = '(popular in episode)'
-                await query.message.reply_text(f"🕑{start_time} *{l['word']}* – {l['meaning']} {mark_popular}",
-                                               parse_mode='Markdown')
-                await asyncio.sleep(0.5)
+        await print_words_to_chat(query, res)
+        await query.message.reply_text("⭐ Rate the words set with /feedback or search for another episode.")
+        # TODO: show the button for the next episode
     else:
-        safe_track(mp, str(update.effective_chat.id), 'Failed: Episode extraction', {
+        safe_track(mp, str(update.effective_chat.id), 'Error: Episode extraction failed', {
             'episode_id': episode_id,
             'title': title,
             'show_id': context.user_data["show_id"]
         })
     return
 
+async def print_words_to_chat(query, res: dict):
+    for k in res.keys():
+        for l in res[k]:
+            mark_popular = ''
+            try:
+                start_time = l['start'].split(",")[0]
+            except (KeyError, IndexError):
+                start_time = l['start']
+
+            if l['freq_srt'] > 2:
+                mark_popular = '(popular in episode)'
+            await query.message.reply_text(f"🕑{start_time} *{l['word']}* – {l['meaning']} {mark_popular}",
+                                           parse_mode='Markdown')
+            await asyncio.sleep(0.3)
 
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """

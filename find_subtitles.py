@@ -5,6 +5,7 @@ import os
 import logging
 import requests_cache
 import config
+import yt_dlp
 
 logging.basicConfig(
     format=config.logs_format,
@@ -12,6 +13,22 @@ logging.basicConfig(
     filename=config.logs_filename
 )
 
+class Youtube:
+    def __init__(self):
+        pass
+
+    def download_srt(self, url, subtitle_lang='en'):
+        ydl_opts = {
+            'writesub': True,  # Download subtitles (if available)
+            'subtitleslangs': [subtitle_lang],  # Specify the subtitle language
+            'subtitlesformat': 'srt',  # Download subtitles in .srt format
+            'skip_download': True,  # Skip video download, only download subtitles
+            'quiet': False,  # Show output for debugging
+            'outtmpl': os.path.join(config.srt_cache_folder_name,'%(id)s.%(ext)s'),  # Save the file with the video title
+        }
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
 
 class Opnsub:
     def __init__(self):
@@ -210,12 +227,13 @@ def srt_cached(file_name: str) -> bool:
 
 
 if __name__ == '__main__':
-    opn = Opnsub()
-    # print(opn.get_opnsub_suggestions("house of cards"))
-    suggestions = opn.get_suggestions('South Park')
-    # 'https://www.opensubtitles.org/gfx/thumbs/4/9/0/6/13406094-t.jpg'
-    print(suggestions)
-
+    # opn = Opnsub()
+    # # print(opn.get_opnsub_suggestions("house of cards"))
+    # suggestions = opn.get_suggestions('South Park')
+    # # 'https://www.opensubtitles.org/gfx/thumbs/4/9/0/6/13406094-t.jpg'
+    # print(suggestions)
+    y = Youtube()
+    y.download_srt('https://www.youtube.com/watch?v=4muxFVZ4XfM&ab_channel=Lenny%27sPodcast')
     # "https://www.opensubtitles.com/nocache/search/en?current_languages=all&episode_number=all&hearing_impaired=hearing_impaired-1&machine_translated=machine_translated-1&q=osdb%3A1180031&search_in=tvshows&season_number=all&trusted_sources=trusted_sources-1"
     # series_data = opn.get_srt_names(parent_feature_id=7160)
     # print(parse_episodes(series_data))
