@@ -17,6 +17,7 @@ requests-cache = "^1.2.1"
 mixpanel = "^4.10.1"
 spacy = "3.8.4"
 pydictionary = "^2.0.1"
+yt-dlp = "^2025.3.31"
 
 [build-system]
 requires = ["poetry-core"]
