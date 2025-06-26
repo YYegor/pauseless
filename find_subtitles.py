@@ -38,8 +38,11 @@ class Opnsub:
         self.api_url_base = 'https://api.opensubtitles.com/api/v1'
         self.headers = {
             "Content-Type": "application/json; charset=utf-8",
-            "User-Agent": "pauseless1 v1.1"
+            "User-Agent": "pauseless1 v1.1",
+            "Accept" : "application/json",
+            "Api-Key": self.opnsub_api_key
         }
+
         requests_cache.install_cache(backend='filesystem', expire_after=600 * 3)
 
     def download_file(self, url: str, save_path: str) -> bool:
@@ -65,16 +68,13 @@ class Opnsub:
 
     def get_srt_download_info(self, file_id: int) -> dict:
         api_url = self.api_url_base + '/download'
-        headers = dict(self.headers)
-        headers["Api-Key"] = self.opnsub_api_key
-        headers["Accept"] = "application/json"
 
         params = {
             "file_id": int(file_id)
         }
 
         logging.info(f"get_srt_download_url: {params}")
-        response = requests.post(api_url, headers=headers, params=params)
+        response = requests.post(api_url, headers=self.headers, params=params)
 
         if response.status_code == 200:
             data = response.json()
@@ -110,7 +110,15 @@ class Opnsub:
             logging.error(f"{response.status_code}")
             return []
 
-    def get_suggestions(self, query, show_type="Tvshow") -> list:
+    def suggestion_wrapper(self, get_opnsub_suggestions_data: list):
+        if get_opnsub_suggestions_data:
+            resp = {}
+            for d in get_opnsub_suggestions_data:
+                resp[d['id']] = {"caption": f"{str(d['attributes']['original_title']).capitalize()}, {d['attributes']['year']}  rate:{0.0}\n",
+                                 "img": d["attributes"]['img_url']}
+            return resp
+
+    def get_suggestions_discnt(self, query, show_type="Tvshow") -> list:
 
         query = query.replace('"', ' ')
         query = query.replace("'", ' ')
@@ -133,10 +141,55 @@ class Opnsub:
             logging.error(f"Error: {response.status_code}")
             return []
 
+    def get_features(self, query, show_type="Tvshow", lang="en") -> list:
+        query = query.replace('"', ' ')
+        query = query.replace("'", ' ')
+        query = query.replace("&", ' ')
+
+        api_url = self.api_url_base + '/features?query=' + query
+        params = {
+            "languages": lang
+        }
+        logging.info(f"Features call with p:{params}")
+        response = requests.get(api_url, headers=self.headers, params=params)
+
+        if response.status_code == 200:
+            data = response.json()['data']
+            result = []
+            for show in data:
+                if show["attributes"]["feature_type"] == show_type:
+                    show["attributes"]["img_url"] = self.fix_poster_url(show["attributes"]["img_url"])
+                    result.append(show)
+            return result
+        else:
+            logging.error(f"Error: {response.status_code}, {response.text}")
+            return []
+
+
+    def get_suggestions(self, query:str, parent_feature_id=0, season=1, year=0, lang="en", order_by="download_count", type="episode") -> list:
+        api_url = self.api_url_base + '/subtitles'
+        params = {
+            "query": query,
+            type: type,
+            **({"parent_feature_id": parent_feature_id} if parent_feature_id != 0 else {}),
+            "languages": lang,
+            "season_number": season,
+            "order_by": order_by,
+            **({"year": year} if year != 0 else {})
+
+        }
+        logging.info(f"Subtitles call with p:{params}")
+        response = requests.get(api_url, headers=self.headers, params=params)
+
+        if response.status_code == 200:
+            data = response.json()
+            return data
+        else:
+            logging.error(f"Error: {response.status_code}, {response.text}, {parent_feature_id}, {season}")
+            return []
+
     def get_srt_names(self, parent_feature_id: int, season=1, year=0, lang="en") -> dict:
         api_url = self.api_url_base + '/subtitles'
-        headers = dict(self.headers)
-        headers["Api-Key"] = self.opnsub_api_key
         params = {
             "parent_feature_id": parent_feature_id,
             "languages": lang,
@@ -145,7 +198,7 @@ class Opnsub:
 
         }
         logging.info(f"Subtitles call with p:{params}")
-        response = requests.get(api_url, headers=headers, params=params)
+        response = requests.get(api_url, headers=self.headers, params=params)
 
         if response.status_code == 200:
             data = response.json()
@@ -227,13 +280,13 @@ def srt_cached(file_name: str) -> bool:
 
 
 if __name__ == '__main__':
-    # opn = Opnsub()
-    # # print(opn.get_opnsub_suggestions("house of cards"))
+    opn = Opnsub()
+    print(opn.suggestion_wrapper(opn.get_features("better call")))
     # suggestions = opn.get_suggestions('South Park')
     # # 'https://www.opensubtitles.org/gfx/thumbs/4/9/0/6/13406094-t.jpg'
     # print(suggestions)
-    y = Youtube()
-    y.download_srt('https://www.youtube.com/watch?v=4muxFVZ4XfM&ab_channel=Lenny%27sPodcast')
+    # y = Youtube()
+    # y.download_srt('https://www.youtube.com/watch?v=4muxFVZ4XfM&ab_channel=Lenny%27sPodcast')
     # "https://www.opensubtitles.com/nocache/search/en?current_languages=all&episode_number=all&hearing_impaired=hearing_impaired-1&machine_translated=machine_translated-1&q=osdb%3A1180031&search_in=tvshows&season_number=all&trusted_sources=trusted_sources-1"
     # series_data = opn.get_srt_names(parent_feature_id=7160)
     # print(parse_episodes(series_data))

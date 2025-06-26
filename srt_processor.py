@@ -15,6 +15,7 @@ import logging
 import config
 import asyncio
 import requests_cache
+import gpt
 
 requests_cache.install_cache(backend='filesystem', expire_after=600 * 3)
 
@@ -25,6 +26,8 @@ logging.basicConfig(
     level=logging.INFO,
     filename=config.logs_filename
 )
+
+gptmodel = gpt.GPT()
 
 nlp = spacy.load("en_core_web_sm")
 nltk.download('wordnet')
@@ -192,8 +195,9 @@ async def process_words(w: str, words_freq, srt_freq_dist, srt_dict: dict, sem):
                 if meaning:
                     meaning = await escape_for_telegram_markup(meaning[0])
                 else:
-                    meaning = await get_urbandictionary_meaning_async(w)
-                    dictionary_type = 'UD'
+                    #meaning = await get_urbandictionary_meaning_async(w)
+                    meaning = await gptmodel.get_word_meaning(w, 'Severance', )
+                    dictionary_type = 'AI'
             try:
                 srt_freq_w = srt_freq_dist[w]
             except KeyError:
@@ -298,7 +302,7 @@ def console_play_srt(resulting_dict: dict):
 
 
 async def mainroutine():
-    srt_filename = "Breaking.Bad.s01e02.DUAL.BDRip.XviD.AC3-eng.srt"
+    srt_filename = "Severance.S01E01.Good.News.About.Hell.1080p.ATVP.WEB-DL.DDP5.1.Atmos.H.264-TEPES.srt"
 
     print(await extract_words(srt_filename))
 
