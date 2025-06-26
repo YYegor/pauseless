@@ -98,15 +98,6 @@ async def feedback(update: Update, context: CallbackContext):
     return ConversationHandler.END
 
 
-def suggestion_wrapper(get_opnsub_suggestions_data: list):
-    if get_opnsub_suggestions_data:
-        resp = {}
-        for d in get_opnsub_suggestions_data:
-            resp[d['id']] = {"caption": f"{str(d['title']).capitalize()}, {d['year']}  rate:{d['rating']}\n",
-                             "img": d['poster']}
-        return resp
-
-
 def get_episodes(show_id: int, season=1) -> None | dict:
     episodes_raw_data = opn.get_srt_names(show_id, season=season)
     if episodes_raw_data:
@@ -131,8 +122,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Looking...", reply_markup=None)
 
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-    suggestions = opn.get_suggestions(user_query)
-    response_dict = suggestion_wrapper(suggestions)
+    suggestions = opn.get_features(user_query)
+    response_dict = opn.suggestion_wrapper(suggestions)
 
     if response_dict:
 
