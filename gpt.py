@@ -1,13 +1,24 @@
 from gpt4all import GPT4All
 from telegram import Update
-
+import logging
 import config
+
+logging.basicConfig(
+    format=config.logs_format,
+    level=logging.INFO,
+    filename=config.logs_filename
+)
+
 
 class GPT:
     def __init__(self):
-        self.model = GPT4All(model_path=config.GPT_model_path,
+        try:
+            self.model = GPT4All(model_path=config.GPT_model_path,
                         model_name=config.GPT_model_name,
                         n_threads=config.GPT_n_threads)
+        except Exception as e:
+            logging.error(f"GPT can't initialise, {e}")
+            self.model = None
 
     async def get_word_meaning(self, word, series_name, sentence):
         request_input = (f"In this script line '{sentence}' from '{series_name}' TV series give a contextual definition"

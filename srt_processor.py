@@ -182,7 +182,7 @@ def words_load_from_json_by_hash(content_hash: str) -> dict:
         return {}  # Return None if file doesn't exist
 
 
-async def process_words(w: str, words_freq, srt_freq_dist, srt_dict: dict, sem):
+async def process_words(w: str, words_freq, srt_freq_dist, srt_dict: dict, sem, series_name=''):
 
     async with sem:
         line_dict = {}
@@ -195,9 +195,13 @@ async def process_words(w: str, words_freq, srt_freq_dist, srt_dict: dict, sem):
                 if meaning:
                     meaning = await escape_for_telegram_markup(meaning[0])
                 else:
-                    #meaning = await get_urbandictionary_meaning_async(w)
-                    meaning = await gptmodel.get_word_meaning(w, 'Severance', )
-                    dictionary_type = 'AI'
+
+                    if gptmodel.model:
+                        meaning = await gptmodel.get_word_meaning(w, 'Severance', )
+                        dictionary_type = 'AI'
+                    else:
+                        meaning = await get_urbandictionary_meaning_async(w)
+                        dictionary_type = 'UD'
             try:
                 srt_freq_w = srt_freq_dist[w]
             except KeyError:
@@ -217,7 +221,7 @@ async def process_words(w: str, words_freq, srt_freq_dist, srt_dict: dict, sem):
     return line_dict
 
 
-async def extract_words(srt_filename: str) -> dict:
+async def extract_words(srt_filename: str, series_name='') -> dict:
     try:
         hash_from_content = hash_srt_file(srt_filename)
     except FileNotFoundError:
