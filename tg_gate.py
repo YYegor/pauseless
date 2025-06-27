@@ -164,6 +164,7 @@ async def cb_handler_show_id(update: Update, context: CallbackContext):
     episodes = get_episodes(int(show_id))
     if episodes:
         context.user_data["episodes"] = episodes
+        context.user_data["show_name"] = '' # get the show name
         # await query.message.reply_text(f"Season 1:")
 
         keyboard = [
@@ -181,6 +182,7 @@ async def cb_handler_show_id(update: Update, context: CallbackContext):
             'show_id': show_id
         })
         context.user_data["episodes"] = {}  # Reset if no episodes found
+        context.user_data["show_name"] = ''
     return
 
 
@@ -239,7 +241,7 @@ async def cb_handler_episode_id(update: Update, context: CallbackContext):
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
 
     try:
-        res = await extract_words(file_name)
+        res = await extract_words(file_name, series_name='')
     except Exception as e:
         logging.error(f"Error {e} while extracting  {file_name}")
         safe_track(mp, str(update.effective_chat.id), 'Error', {
