@@ -19,6 +19,8 @@ spacy = "3.8.4"
 pydictionary = "^2.0.1"
 yt-dlp = "^2025.3.31"
 gpt4all = "^2.8.2"
+ipa = "^4.12.2"
+eng-to-ipa = "^0.0.2"
 
 [build-system]
 requires = ["poetry-core"]

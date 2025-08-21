@@ -42,12 +42,12 @@ def safe_track(mixpanel, *args, **kwargs):
         logging.warning(f"Mixpanel tracking failed: {e}")
 
 
-async def get_top_series(update: Update):
+async def get_top_series(update: Update, context: CallbackContext):
     response_dict = {"1340460": {'caption': 'Severance (2022)'},
                      "8882": {'caption': 'Breaking Bad (2008)'},
                      "1299348": {'caption': 'Squid Game (2021)'},
                      "1434916": {'caption': 'Shrinking (2023)'},
-                     "7160": {'caption': 'South Park (1997)'},
+                     "7160": {'caption': 'South Park (1997)'}
                      }
 
     keyboard = [
@@ -57,17 +57,54 @@ async def get_top_series(update: Update):
         ] for k in response_dict
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
+    for k in response_dict:
+        context.user_data[k]=response_dict[k]['caption']
 
     await update.message.reply_text(f"I'll prep your vocab so you won't need to pause while watching.\n"
                                     f"Are you watching one of these hits?", reply_markup=reply_markup)
     await update.message.reply_text("Or let me help to find other shows. Just type the name.")
     return ConversationHandler.END
 
+async def show_card(update: Update, last_message_id, context: CallbackContext):
+
+    index = context.user_data.get("card_index", 0)
+
+    cards = context.user_data.get("cards")
+    key = list(cards.keys())[index]
+    l = cards[key][0]
+    mark_popular = ''
+    try:
+        start_time = l['start'].split(",")[0]
+    except (KeyError, IndexError):
+        start_time = l['start']
+
+    if l['freq_srt'] > 2:
+        mark_popular = '(popular in episode)'
+
+    text = (f"🕑{start_time} *{l['word']}*"
+            f" ({l['ipa']})\n"+"-"*45+"\n"
+            f" {l['meaning']} {mark_popular}\n"
+            f"{index+1}/{len(cards)}")
+
+    keyboard = [
+        [
+            InlineKeyboardButton("◀️ Back", callback_data="prev"),
+            InlineKeyboardButton("Next ▶️", callback_data="next")
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await context.bot.edit_message_text(chat_id=update.effective_chat.id,
+                                        message_id=last_message_id,
+                                        text=text, reply_markup=reply_markup, parse_mode='Markdown')
+
 
 async def start(update: Update, context: CallbackContext):
     user_id = update.message.chat_id
+    context.user_data["card_index"] = 0
+    context.user_data["cards"] = None
     args = context.args
-    param = ''
+    param = ""
     if args:
         param = args[0]
 
@@ -81,7 +118,7 @@ async def start(update: Update, context: CallbackContext):
     if user_first_name:
         user_first_name = ', ' + user_first_name
     await update.message.reply_text(f"Hi{user_first_name}!")
-    await get_top_series(update)
+    await get_top_series(update, context)
 
     return ConversationHandler.END
 
@@ -122,6 +159,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Looking...", reply_markup=None)
 
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+
+    # refresh cards
+    context.user_data["cards"] = None
+
     suggestions = opn.get_features(user_query)
     response_dict = opn.suggestion_wrapper(suggestions)
 
@@ -136,6 +177,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     ]
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
+                context.user_data[k] = response_dict[k]['caption']
+
                 await update.message.reply_photo(photo=f,
                                                  reply_markup=reply_markup)
 
@@ -148,15 +191,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cb_handler_show_id(update: Update, context: CallbackContext):
+    print(context.user_data)
     context.user_data["feedback_input_flag"] = False
     query = update.callback_query
+    print(query.data)
     show_id = query.data.split("show_id:")[1]
 
     safe_track(mp, str(update.effective_chat.id), 'Show requested', {
         'show_id': show_id
     })
     context.user_data["show_id"] = show_id
-
+    print(context.user_data)
     await query.message.reply_text("Great choice! Looking for episodes...", reply_markup=None)
 
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
@@ -164,7 +209,6 @@ async def cb_handler_show_id(update: Update, context: CallbackContext):
     episodes = get_episodes(int(show_id))
     if episodes:
         context.user_data["episodes"] = episodes
-        context.user_data["show_name"] = '' # get the show name
         # await query.message.reply_text(f"Season 1:")
 
         keyboard = [
@@ -174,15 +218,17 @@ async def cb_handler_show_id(update: Update, context: CallbackContext):
             ] for episode in episodes
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.message.reply_text("Season 1:", reply_markup=reply_markup)
-        await query.message.reply_text("Tap to explore the vocab.", reply_markup=None)
+        message_episodes_list = await query.message.reply_text("Season 1:", reply_markup=reply_markup)
+        context.user_data["episodes_list_message_id"] = message_episodes_list.message_id
+        tap_vocab_message = await query.message.reply_text("Tap to explore the vocab.", reply_markup=None)
+        context.user_data["tap_vocab_message_id"] = tap_vocab_message.message_id
+
     else:
         await query.message.reply_text(f"Sorry, can't find episodes")
         safe_track(mp, str(update.effective_chat.id), 'Failed: Episodes not found', {
             'show_id': show_id
         })
         context.user_data["episodes"] = {}  # Reset if no episodes found
-        context.user_data["show_name"] = ''
     return
 
 
@@ -195,6 +241,8 @@ async def cb_handler_episode_id(update: Update, context: CallbackContext):
     logging.info(f"Episode data = {episode_id}")
 
     episodes = context.user_data.get("episodes", {})
+    series_name = context.user_data[context.user_data["show_id"]] or ''
+    print(context.user_data[context.user_data["show_id"]], context.user_data["show_id"])
 
     if not episodes:
         await query.message.reply_text("☁️ Something went wrong. It's not you, it's me.")
@@ -237,11 +285,12 @@ async def cb_handler_episode_id(update: Update, context: CallbackContext):
     else:
         logging.info(f"Srt file cached! {file_name}")
 
-    await query.message.reply_text(f"⏳ Processing the text of {title}. It may take a while...")
+    last_message = await query.message.reply_text(f"⏳ Processing the text of {title}. It may take a while...")
+    context.user_data["card_last_message_id"] = last_message.message_id
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
 
     try:
-        res = await extract_words(file_name, series_name='')
+        res = await extract_words(file_name, series_name=series_name)
     except Exception as e:
         logging.error(f"Error {e} while extracting  {file_name}")
         safe_track(mp, str(update.effective_chat.id), 'Error', {
@@ -254,8 +303,18 @@ async def cb_handler_episode_id(update: Update, context: CallbackContext):
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
 
     if res:
-        await print_words_to_chat(query, res)
-        await query.message.reply_text("⭐ Rate the words set with /feedback or search for another episode.")
+        #await print_words_to_chat(query, res)
+        context.user_data["cards"] = res
+        context.user_data["card_index"] = 0
+
+        #edit episodes list
+        await context.bot.edit_message_text(chat_id=update.effective_chat.id,
+                                        message_id=context.user_data["episodes_list_message_id"],
+                                        text=f"Episode '{title}'", parse_mode='Markdown')
+        # remove unnecessary messsage
+        await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=context.user_data["tap_vocab_message_id"])
+        await show_card(update, last_message.message_id, context)
+        # await query.message.reply_text("⭐ Rate the words set with /feedback or search for another episode.")
         # TODO: show the button for the next episode
     else:
         safe_track(mp, str(update.effective_chat.id), 'Error: Episode extraction failed', {
@@ -276,7 +335,7 @@ async def print_words_to_chat(query, res: dict):
 
             if l['freq_srt'] > 2:
                 mark_popular = '(popular in episode)'
-            await query.message.reply_text(f"🕑{start_time} *{l['word']}* – {l['meaning']} {mark_popular}",
+            await query.message.reply_text(f"🕑{start_time} *{l['word']}* ({l['ipa']}) – {l['meaning']} {mark_popular}",
                                            parse_mode='Markdown')
             await asyncio.sleep(0.3)
 
@@ -286,6 +345,19 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     """
     query = update.callback_query
     logging.info(f"Callback data = {query.data}")
+    await query.answer()
+    cards = context.user_data.get("cards", None)
+
+    if cards:
+        index = context.user_data.get("card_index", 0)
+        if query.data == "next":
+            index = (index + 1) % len(cards)
+        elif query.data == "prev":
+            index = (index - 1) % len(cards)
+
+        context.user_data["card_index"] = index
+        await show_card(update, context.user_data["card_last_message_id"], context=context)
+        return ConversationHandler.END
 
     if "show_id" in query.data:
         context.application.create_task(cb_handler_show_id(update, context))

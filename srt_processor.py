@@ -12,10 +12,14 @@ import time
 from datetime import datetime, timedelta
 import os
 import logging
+
+from pkg_resources import non_empty_lines
+
 import config
 import asyncio
 import requests_cache
 import gpt
+import eng_to_ipa as ipa
 
 requests_cache.install_cache(backend='filesystem', expire_after=600 * 3)
 
@@ -27,7 +31,7 @@ logging.basicConfig(
     filename=config.logs_filename
 )
 
-gptmodel = gpt.GPT()
+gptmodel = gpt.GPTGemini()
 
 nlp = spacy.load("en_core_web_sm")
 nltk.download('wordnet')
@@ -66,6 +70,8 @@ async def escape_for_telegram_markup(text):
     data = data.replace('\r\r', ' ')
     data = data.replace('"', '')
     data = data.replace('`', """'""")
+    data = data.replace('*', "")
+
     return data
 
 
@@ -121,15 +127,20 @@ def get_words_by_timedelta(srt_timestamp: timedelta, resulting_dict: dict):
             return {i: resulting_dict[i]}
     return None
 
+def remove_srt_inclusions(text):
+    '''like inclusions like {\pos(982.5219)}'''
+    return re.sub(r"\{\\[^}]*\}", "", text)
 
 def get_cleaned_srt_line(line: str) -> str:
     replacements = [
-        "<i>", "</i>", "- ", " -", "'s", "'d", "'ve", "'ll", "[", "]", "…", "♪", '"', "$", "%", "—"
+        "<i>", "</i>", "- ", " -", "'s", "'d", "'ve", "'ll", "[", "]", "…", "♪", '"', "$", "%", "—", "(", ")"
     ]
 
     cleaned_text = line
     for char in replacements:
         cleaned_text = cleaned_text.replace(char, " ")
+
+    cleaned_text = remove_srt_inclusions(cleaned_text)
 
     cleaned_text = re.sub(r'\{\\an\d\}', '', cleaned_text)
 
@@ -182,43 +193,61 @@ def words_load_from_json_by_hash(content_hash: str) -> dict:
         return {}  # Return None if file doesn't exist
 
 
-async def process_words(w: str, words_freq, srt_freq_dist, srt_dict: dict, sem, series_name=''):
-
+async def process_words(w: str, words_freq, srt_freq, srt_dict: dict, sem, series_name=''):
     async with sem:
         line_dict = {}
         dictionary_type = 'default'
+
+        # Only process rare or unknown words
         if words_freq[w] < 1:
-            if await check_if_name(w):
-                meaning = 'a name'
+
+            meaning_list = await get_meaning_wordnet_async(w)
+            if meaning_list:
+                meaning = await escape_for_telegram_markup(meaning_list[0])
             else:
-                meaning = await get_meaning_wordnet_async(w)
-                if meaning:
-                    meaning = await escape_for_telegram_markup(meaning[0])
-                else:
+                # Fallback to GPT or Urban Dictionary
+                sentence = ""
+                period = get_time_index(w, srt_dict)
 
-                    if gptmodel.model:
-                        meaning = await gptmodel.get_word_meaning(w, 'Severance', )
-                        dictionary_type = 'AI'
-                    else:
-                        meaning = await get_urbandictionary_meaning_async(w)
-                        dictionary_type = 'UD'
-            try:
-                srt_freq_w = srt_freq_dist[w]
-            except KeyError:
-                srt_freq_w = 0
+                if period:
+                    for i in srt_dict:
+                        if srt_dict[i]["time"].startswith(period[0]):
+                            sentence = srt_dict[i]["text"]
+                            break
+
+                if gptmodel.model:
+                    meaning = gptmodel.get_word_meaning(w, series_name, sentence)
+                    dictionary_type = 'AI'
+
+                if not meaning:
+                    meaning = await get_urbandictionary_meaning_async(w)
+                    dictionary_type = 'UD'
+
+            # Frequency of word in subtitle
+            srt_freq_w = srt_freq.get(w, 0)
+
+            # Get timing and sentence
             period = get_time_index(w, srt_dict)
-            # TODO: currently,
-            # for escaped, cleared lines it is impossible to find their original
-            # timestamp. Required re-organizing of the structure.
             if period:
-                line_dict = {'start': period[0],
-                             'end': period[1],
-                             'word': w,
-                             'meaning': meaning,
-                             'freq_srt': srt_freq_w,
-                             'dict': dictionary_type}
+                sentence = ""
+                for i in srt_dict:
+                    if srt_dict[i]["time"].startswith(period[0]):
+                        sentence = srt_dict[i]["text"]
+                        break
 
-    return line_dict
+                line_dict = {
+                    'start': period[0],
+                    'end': period[1],
+                    'word': w,
+                    'meaning': meaning,
+                    'freq_srt': srt_freq_w,
+                    'dict': dictionary_type,
+                    'sentence': sentence,
+                    'ipa': await escape_for_telegram_markup(ipa.convert(w))
+                }
+
+        return line_dict
+
 
 
 async def extract_words(srt_filename: str, series_name='') -> dict:
@@ -257,7 +286,7 @@ async def extract_words(srt_filename: str, series_name='') -> dict:
                 words_freq[word] = -1
 
         sem = asyncio.Semaphore(SIMULT_LIMIT)
-        tasks = [process_words(w, words_freq, srt_freq_dist, srt_dict, sem) for w in words_freq]
+        tasks = [process_words(w, words_freq, srt_freq_dist, srt_dict, sem, series_name=series_name) for w in words_freq]
         results = await asyncio.gather(*tasks)  # Process words asynchronously
         resulting_dict = {}
 
@@ -312,4 +341,5 @@ async def mainroutine():
 
 
 if __name__ == '__main__':
+    #print (hash_srt_file('Severance.S01E01.Good.News.About.Hell.1080p.ATVP.WEB-DL.DDP5.1.Atmos.H.264-TEPES.srt'))
     asyncio.run(mainroutine())
