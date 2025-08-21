@@ -11,7 +11,9 @@ logging.basicConfig(
     filename=config.logs_filename
 )
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
+if not GEMINI_API_KEY:
+    logging.error("GEMINI_API_KEY not set")
 
 class GPT:
     def __init__(self):
