@@ -1,3 +1,5 @@
+from json import JSONDecodeError
+
 import requests
 from io import BytesIO
 from PIL import Image
@@ -114,7 +116,7 @@ class Opnsub:
         if get_opnsub_suggestions_data:
             resp = {}
             for d in get_opnsub_suggestions_data:
-                resp[d['id']] = {"caption": f"{str(d['attributes']['original_title']).capitalize()}, {d['attributes']['year']}  rate:{0.0}\n",
+                resp[d['id']] = {"caption": f"{str(d['attributes']['original_title']).capitalize()}, {d['attributes']['year']}\n",
                                  "img": d["attributes"]['img_url']}
             return resp
 
@@ -141,12 +143,12 @@ class Opnsub:
             logging.error(f"Error: {response.status_code}")
             return []
 
-    def get_features(self, query, show_type="Tvshow", lang="en") -> list:
+    def get_features(self, query, show_type="tvshow", lang="en") -> list:
         query = query.replace('"', ' ')
         query = query.replace("'", ' ')
         query = query.replace("&", ' ')
 
-        api_url = self.api_url_base + '/features?query=' + query
+        api_url = self.api_url_base + '/features?query=' + query + "&type=" + show_type
         params = {
             "languages": lang
         }
@@ -155,9 +157,10 @@ class Opnsub:
 
         if response.status_code == 200:
             data = response.json()['data']
+            print(data)
             result = []
             for show in data:
-                if show["attributes"]["feature_type"] == show_type:
+                if show["type"] == show_type:
                     show["attributes"]["img_url"] = self.fix_poster_url(show["attributes"]["img_url"])
                     result.append(show)
             return result
@@ -182,8 +185,13 @@ class Opnsub:
         response = requests.get(api_url, headers=self.headers, params=params)
 
         if response.status_code == 200:
-            data = response.json()
-            return data
+            try:
+                data = response.json()
+            except JSONDecodeError:
+                logging.error(f"Error: {response.status_code}, {response.text}, {parent_feature_id}, {season}")
+                data = None
+
+            return data["data"]
         else:
             logging.error(f"Error: {response.status_code}, {response.text}, {parent_feature_id}, {season}")
             return []
@@ -281,7 +289,8 @@ def srt_cached(file_name: str) -> bool:
 
 if __name__ == '__main__':
     opn = Opnsub()
-    print(opn.suggestion_wrapper(opn.get_features("better call")))
+    #print(opn.suggestion_wrapper(opn.get_features("better call")))
+    print(opn.get_features('Shrinking'))
     # suggestions = opn.get_suggestions('South Park')
     # # 'https://www.opensubtitles.org/gfx/thumbs/4/9/0/6/13406094-t.jpg'
     # print(suggestions)
