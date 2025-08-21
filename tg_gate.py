@@ -25,7 +25,7 @@ from telegram.ext import (
 from telegram.constants import ChatAction
 
 from find_subtitles import get_img_resized, parse_episodes, Opnsub, srt_cached
-from srt_processor import extract_words_sync
+from srt_processor import extract_words
 
 TG_BOT_KEY = os.environ.get('TG_BOT_KEY')
 opn = Opnsub()
@@ -289,7 +289,7 @@ async def cb_handler_episode_id(update: Update, context: CallbackContext):
     last_message = await query.message.reply_text(f"⏳ Processing the text of {title}. It may take a while...")
     context.user_data["card_last_message_id"] = last_message.message_id
     try:
-        res = await to_thread(extract_words_sync, file_name, series_name=series_name)
+        res = await extract_words(file_name, series_name=series_name)
 
     except Exception as e:
         logging.error(f"Error {e} while extracting  {file_name}")
