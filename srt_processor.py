@@ -342,7 +342,7 @@ def console_play_srt(resulting_dict: dict):
 
 
 async def mainroutine():
-    srt_filename = "The Simpsons [3.11].srt"
+    srt_filename = "Severance.S01E01.Good.News.About.Hell.1080p.ATVP.WEB-DL.DDP5.1.Atmos.H.264-TEPES.srt"
 
     print(await extract_words(srt_filename))
 
