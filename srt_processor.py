@@ -13,8 +13,6 @@ from datetime import datetime, timedelta
 import os
 import logging
 
-from pkg_resources import non_empty_lines
-
 import config
 import asyncio
 import requests_cache
@@ -133,7 +131,8 @@ def remove_srt_inclusions(text):
 
 def get_cleaned_srt_line(line: str) -> str:
     replacements = [
-        "<i>", "</i>", "- ", " -", "'s", "'d", "'ve", "'ll", "[", "]", "…", "♪", '"', "$", "%", "—", "(", ")"
+        "<i>", "</i>", "- ", " -", "'s", "'d", "'ve", "'ll", "[", "]", "…", "♪", '"', "$", "%", "—", "(", ")",
+        "#", "##", "''"
     ]
 
     cleaned_text = line
@@ -193,62 +192,65 @@ def words_load_from_json_by_hash(content_hash: str) -> dict:
         return {}  # Return None if file doesn't exist
 
 
-async def process_words(w: str, words_freq, srt_freq, srt_dict: dict, sem, series_name=''):
+async def process_words(w: str, srt_freq, srt_dict: dict, sem, series_name=''):
     async with sem:
+        print(f'new task started for {w}')
         line_dict = {}
         dictionary_type = 'default'
 
         # Only process rare or unknown words
-        if words_freq[w] < 1:
-
-            meaning_list = await get_meaning_wordnet_async(w)
-            if meaning_list:
-                meaning = await escape_for_telegram_markup(meaning_list[0])
-            else:
-                # Fallback to GPT or Urban Dictionary
-                sentence = ""
-                period = get_time_index(w, srt_dict)
-
-                if period:
-                    for i in srt_dict:
-                        if srt_dict[i]["time"].startswith(period[0]):
-                            sentence = srt_dict[i]["text"]
-                            break
-
-                if gptmodel.model:
-                    meaning = gptmodel.get_word_meaning(w, series_name, sentence)
-                    dictionary_type = 'AI'
-
-                if not meaning:
-                    meaning = await get_urbandictionary_meaning_async(w)
-                    dictionary_type = 'UD'
-
-            # Frequency of word in subtitle
-            srt_freq_w = srt_freq.get(w, 0)
-
-            # Get timing and sentence
-            period = get_time_index(w, srt_dict)
-            if period:
-                sentence = ""
-                for i in srt_dict:
-                    if srt_dict[i]["time"].startswith(period[0]):
-                        sentence = srt_dict[i]["text"]
-                        break
-
-                line_dict = {
-                    'start': period[0],
-                    'end': period[1],
-                    'word': w,
-                    'meaning': meaning,
-                    'freq_srt': srt_freq_w,
-                    'dict': dictionary_type,
-                    'sentence': sentence,
-                    'ipa': await escape_for_telegram_markup(ipa.convert(w))
-                }
-
-        return line_dict
 
 
+        #meaning_list = await get_meaning_wordnet_async(w)
+        #if meaning_list:
+        #    meaning = await escape_for_telegram_markup(meaning_list[0])
+
+        # Fallback to GPT or Urban Dictionary
+        sentence = ""
+        period = get_time_index(w, srt_dict)
+
+        if period:
+            for i in srt_dict:
+                if srt_dict[i]["time"].startswith(period[0]):
+                    sentence = srt_dict[i]["text"]
+                    break
+
+        if gptmodel:
+            meaning = await gptmodel.get_word_meaning(w, series_name, sentence)
+            dictionary_type = 'AI'
+
+        if not meaning:
+            meaning = await get_urbandictionary_meaning_async(w)
+            dictionary_type = 'UD'
+
+        # Frequency of word in subtitle
+        srt_freq_w = srt_freq.get(w, 0)
+
+        # Get timing and sentence
+        period = get_time_index(w, srt_dict)
+        if period:
+            sentence = ""
+            for i in srt_dict:
+                if srt_dict[i]["time"].startswith(period[0]):
+                    sentence = srt_dict[i]["text"]
+                    break
+
+            line_dict = {
+                'start': period[0],
+                'end': period[1],
+                'word': w,
+                'meaning': meaning,
+                'freq_srt': srt_freq_w,
+                'dict': dictionary_type,
+                'sentence': sentence,
+                'ipa': await escape_for_telegram_markup(ipa.convert(w))
+            }
+
+    return line_dict
+
+
+def extract_words_sync(srt_filename: str, series_name: str = "") -> dict:
+    return asyncio.run(extract_words(srt_filename, series_name))
 
 async def extract_words(srt_filename: str, series_name='') -> dict:
     try:
@@ -261,7 +263,7 @@ async def extract_words(srt_filename: str, series_name='') -> dict:
     if resulting_dict:
         logging.info(f"Cached data found for {srt_filename} of {len(resulting_dict)} words")
 
-    else:
+    else: # no cache
         srt_dict = srt_parse_from_file(srt_filename)
         words = []
         for i in range(1, len(srt_dict)):
@@ -278,7 +280,8 @@ async def extract_words(srt_filename: str, series_name='') -> dict:
         srt_freq_dist = FreqDist(words)
 
         words_freq = {}
-
+        print(f"Frequency of words {len(words)}, {len(set(words))}")
+        words = list(set(words))
         for word in words:
             try:
                 words_freq[word] = WORDS_FREQ_DIST[word.lower()]
@@ -286,7 +289,11 @@ async def extract_words(srt_filename: str, series_name='') -> dict:
                 words_freq[word] = -1
 
         sem = asyncio.Semaphore(SIMULT_LIMIT)
-        tasks = [process_words(w, words_freq, srt_freq_dist, srt_dict, sem, series_name=series_name) for w in words_freq]
+        tasks = []
+        for w in words_freq:
+            if words_freq[w] < 1:
+                tasks.append(process_words(w, srt_freq_dist, srt_dict, sem, series_name=series_name))
+
         results = await asyncio.gather(*tasks)  # Process words asynchronously
         resulting_dict = {}
 
@@ -335,7 +342,7 @@ def console_play_srt(resulting_dict: dict):
 
 
 async def mainroutine():
-    srt_filename = "Severance.S01E01.Good.News.About.Hell.1080p.ATVP.WEB-DL.DDP5.1.Atmos.H.264-TEPES.srt"
+    srt_filename = "The Simpsons [3.11].srt"
 
     print(await extract_words(srt_filename))
 

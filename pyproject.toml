@@ -21,6 +21,7 @@ yt-dlp = "^2025.3.31"
 gpt4all = "^2.8.2"
 ipa = "^4.12.2"
 eng-to-ipa = "^0.0.2"
+httpx = {extras = ["http2"], version = "^0.28.1"}
 
 [build-system]
 requires = ["poetry-core"]
