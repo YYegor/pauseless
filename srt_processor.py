@@ -194,16 +194,10 @@ def words_load_from_json_by_hash(content_hash: str) -> dict:
 
 async def process_words(w: str, srt_freq, srt_dict: dict, sem, series_name=''):
     async with sem:
-        print(f'new task started for {w}')
         line_dict = {}
         dictionary_type = 'default'
 
         # Only process rare or unknown words
-
-
-        #meaning_list = await get_meaning_wordnet_async(w)
-        #if meaning_list:
-        #    meaning = await escape_for_telegram_markup(meaning_list[0])
 
         # Fallback to GPT or Urban Dictionary
         sentence = ""
@@ -301,10 +295,26 @@ async def extract_words(srt_filename: str, series_name='') -> dict:
             if res:
                 resulting_dict.setdefault(res['start'], []).append(res)
 
+        resulting_dict = dict(
+            sorted(
+                resulting_dict.items(),
+                key=lambda x: datetime.strptime(x[0].replace(",", "."), "%H:%M:%S.%f")
+            )
+        )
+
         try:
             words_dump_as_json_by_hash(resulting_dict, hash_from_content)
         except IOError as e:
             logging.error(f"Error while writing to cache words json file: {e}. No cache saved.")
+        return resulting_dict
+
+    # TODO skip sorting if all cached data is sorted
+    resulting_dict = dict(
+        sorted(
+            resulting_dict.items(),
+            key=lambda x: datetime.strptime(x[0].replace(",", "."), "%H:%M:%S.%f")
+        )
+    )
     return resulting_dict
 
 

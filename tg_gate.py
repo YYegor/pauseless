@@ -311,7 +311,7 @@ async def cb_handler_episode_id(update: Update, context: CallbackContext):
         await context.bot.edit_message_text(chat_id=update.effective_chat.id,
                                         message_id=context.user_data["episodes_list_message_id"],
                                         text=f"Episode '{title}'", parse_mode='Markdown')
-        # remove unnecessary messsage
+        # remove unnecessary message
         await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=context.user_data["tap_vocab_message_id"])
         await show_card(update, last_message.message_id, context)
         # await query.message.reply_text("⭐ Rate the words set with /feedback or search for another episode.")
