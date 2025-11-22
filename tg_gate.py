@@ -2,8 +2,8 @@ import os
 import logging
 import config
 import asyncio
-from asyncio import to_thread
 from telegram import BotCommand
+from telegram import LabeledPrice
 
 # Enable logging for debug info
 logging.basicConfig(
@@ -13,7 +13,17 @@ logging.basicConfig(
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-from mixpanel import Mixpanel
+
+from mixpanel import Mixpanel, Consumer
+
+class VerboseConsumer(Consumer):
+    def send(self, endpoint, json_message):
+        print(f"[Mixpanel track] endpoint={endpoint}")
+        print(f"[Mixpanel track] payload={json_message}")
+        resp = super().send(endpoint, json_message)
+        print(f"[Mixpanel track] response={resp}")
+        return resp
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
@@ -23,6 +33,7 @@ from telegram.ext import (
     CallbackQueryHandler, CallbackContext, ConversationHandler, CommandHandler
 )
 from telegram.constants import ChatAction
+from telegram.ext import PreCheckoutQueryHandler
 
 from find_subtitles import get_img_resized, parse_episodes, Opnsub, srt_cached
 from srt_processor import extract_words
@@ -31,7 +42,7 @@ TG_BOT_KEY = os.environ.get('TG_BOT_KEY')
 opn = Opnsub()
 
 MIXPANEL_TOKEN = os.environ.get('MIXPANEL_TOKEN')
-mp = Mixpanel(MIXPANEL_TOKEN)
+mp = Mixpanel(MIXPANEL_TOKEN, consumer=VerboseConsumer())
 logging.info('Mixpanel initialized')
 
 
@@ -41,7 +52,6 @@ def safe_track(mixpanel, *args, **kwargs):
     except Exception as e:
         # Optional: log the error
         logging.warning(f"Mixpanel tracking failed: {e}")
-
 
 async def get_top_series(update: Update, context: CallbackContext):
     response_dict = {"1340460": {'caption': 'Severance (2022)'},
@@ -99,6 +109,17 @@ async def show_card(update: Update, last_message_id, context: CallbackContext):
                                         message_id=last_message_id,
                                         text=text, reply_markup=reply_markup, parse_mode='Markdown')
 
+async def buy(update, context: ContextTypes.DEFAULT_TYPE):
+    prices = [LabeledPrice("Pro Access", 1)]
+    await update.effective_chat.send_invoice(
+        title="Pro Access",
+        description="Unlock premium features",
+        payload="order-001",
+        provider_token="",          # empty for digital goods (Stars)
+        currency="XTR",             # Stars currency
+        prices=prices,
+        start_parameter="multi"     # or single-chat behavior
+    )
 
 async def start(update: Update, context: CallbackContext):
     user_id = update.message.chat_id
@@ -371,6 +392,15 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         # await cb_handler_episode_id(update, context)
         return ConversationHandler.END
 
+async def precheckout(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.pre_checkout_query.answer(ok=True)
+
+
+async def on_successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    sp = update.message.successful_payment
+    await update.message.reply_text("✅ Payment received. Thanks! Your premium is unlocked.")
+    # TODO: grant user's premium features here (e.g., set a flag in DB)
+
 
 async def set_bot_commands(application):
     commands = [
@@ -386,14 +416,19 @@ def main():
 
     # Handler for any text message
     application.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
+        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message),
     )
 
     application.add_handler(
         CallbackQueryHandler(handle_callback_query)
     )
+    application.add_handler(PreCheckoutQueryHandler(precheckout))
+    application.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, on_successful_payment))
+
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("feedback", feedback))
+    application.add_handler(CommandHandler("premium", buy))
+
     application.post_init = set_bot_commands
 
     application.run_polling()

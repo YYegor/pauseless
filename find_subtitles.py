@@ -46,6 +46,9 @@ class Opnsub:
         }
 
         requests_cache.install_cache(backend='filesystem', expire_after=600 * 3)
+    def get_seasons_list(self, raw_response_feature:dict):
+        seasons_list = raw_response_feature['']
+        pass
 
     def download_file(self, url: str, save_path: str) -> bool:
         """
