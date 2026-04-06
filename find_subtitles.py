@@ -293,7 +293,7 @@ def srt_cached(file_name: str) -> bool:
 if __name__ == '__main__':
     opn = Opnsub()
     #print(opn.suggestion_wrapper(opn.get_features("better call")))
-    print(opn.get_features('Shrinking'))
+    print(opn.get_features('Money Heist'))
     # suggestions = opn.get_suggestions('South Park')
     # # 'https://www.opensubtitles.org/gfx/thumbs/4/9/0/6/13406094-t.jpg'
     # print(suggestions)
