@@ -1,6 +1,6 @@
 from json import JSONDecodeError
-
-import requests
+import requests as regular_requests
+from curl_cffi import requests
 from io import BytesIO
 from PIL import Image
 from PIL import UnidentifiedImageError
@@ -59,7 +59,7 @@ class Opnsub:
         :param save_path: The local file path where the file should be saved.
         """
         try:
-            response = requests.get(url, stream=True)
+            response = regular_requests.get(url, stream=True)
             response.raise_for_status()  # Raise an error for bad responses (4xx, 5xx)
 
             with open(os.path.join(config.srt_cache_folder_name, save_path), "wb") as file:
@@ -68,7 +68,7 @@ class Opnsub:
 
             logging.info(f"File downloaded successfully: {save_path}")
             return True
-        except requests.exceptions.RequestException as e:
+        except regular_requests.exceptions.RequestException as e:
             logging.error(f"Download of {url} failed: {e}")
             return False
 
@@ -80,7 +80,7 @@ class Opnsub:
         }
 
         logging.info(f"get_srt_download_url: {params}")
-        response = requests.post(api_url, headers=self.headers, params=params)
+        response = regular_requests.post(api_url, headers=self.headers, params=params)
 
         if response.status_code == 200:
             data = response.json()
@@ -101,7 +101,7 @@ class Opnsub:
         query = query.replace("&", ' ')
         query = query.replace(' ', '%20')
 
-        response = requests.get(f"https://www.opensubtitles.org/libs/suggest.php?format=json3&MovieName={query}"
+        response = regular_requests.get(f"https://www.opensubtitles.org/libs/suggest.php?format=json3&MovieName={query}"
                                 f"&SubLanguageID=null",
                                 headers=self.headers)
         if response.status_code == 200:
@@ -131,7 +131,7 @@ class Opnsub:
         query = query.replace("&", ' ')
         query = query.replace(' ', '%20')
 
-        response = requests.get(f"https://www.opensubtitles.com/en/en/search/autocomplete/{query}.json",
+        response = regular_requests.get(f"https://www.opensubtitles.com/en/en/search/autocomplete/{query}.json",
                                 headers=self.headers)
 
         if response.status_code == 200:
@@ -157,7 +157,7 @@ class Opnsub:
             "languages": lang
         }
         logging.info(f"Features call with p:{params}")
-        response = requests.get(api_url, headers=self.headers, params=params)
+        response = regular_requests.get(api_url, headers=self.headers, params=params)
 
         if response.status_code == 200:
             data = response.json()['data']
@@ -186,7 +186,7 @@ class Opnsub:
 
         }
         logging.info(f"Subtitles call with p:{params}")
-        response = requests.get(api_url, headers=self.headers, params=params)
+        response = regular_requests.get(api_url, headers=self.headers, params=params)
 
         if response.status_code == 200:
             try:
@@ -210,7 +210,7 @@ class Opnsub:
 
         }
         logging.info(f"Subtitles call with p:{params}")
-        response = requests.get(api_url, headers=self.headers, params=params)
+        response = regular_requests.get(api_url, headers=self.headers, params=params)
 
         if response.status_code == 200:
             data = response.json()
@@ -233,7 +233,7 @@ def get_img_resized(input_path, new_height=config.chat_preview_height):
     if img_is_cached(os.path.join(config.img_cache_folder_name, filename + filename_end)):
         pass
     else:
-        response = requests.get(input_path)
+        response = requests.get(input_path, impersonate="chrome120")
         img_data = response.content
         img_bytes_io = BytesIO(img_data)
         try:
