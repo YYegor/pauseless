@@ -3,6 +3,7 @@ from json import JSONDecodeError
 import requests
 from io import BytesIO
 from PIL import Image
+from PIL import UnidentifiedImageError
 import os
 import logging
 import requests_cache
@@ -235,7 +236,11 @@ def get_img_resized(input_path, new_height=config.chat_preview_height):
         response = requests.get(input_path)
         img_data = response.content
         img_bytes_io = BytesIO(img_data)
-        img = Image.open(img_bytes_io)
+        try:
+            img = Image.open(img_bytes_io)
+        except UnidentifiedImageError as e:
+            logging.error(f"Error: {response.status_code}, {filename}, {input_path}")
+            return None
         width, height = img.size
 
         # convert png to jpg
