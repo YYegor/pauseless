@@ -6,7 +6,7 @@ authors = ["YYlab <sxfF9DUbbvyY4sQ>"]
 readme = "README.md"
 
 [tool.poetry.dependencies]
-python = ">=3.9,<3.13"
+python = ">=3.10,<3.13"
 nltk = "^3.9.1"
 pattern = "^0.0.1a0"
 inflect = "^7.5.0"
@@ -22,6 +22,7 @@ gpt4all = "^2.8.2"
 ipa = "^4.12.2"
 eng-to-ipa = "^0.0.2"
 httpx = {extras = ["http2"], version = "^0.28.1"}
+curl-cffi = "^0.15.0"
 
 [build-system]
 requires = ["poetry-core"]
