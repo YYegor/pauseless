@@ -239,8 +239,8 @@ def get_img_resized(input_path, new_height=config.chat_preview_height):
         try:
             img = Image.open(img_bytes_io)
         except UnidentifiedImageError as e:
-            logging.error(f"Error: {response.status_code}, {filename}, {input_path}")
-            return None
+            logging.warning(f"Warning, no image: {response.status_code}, {filename}, {input_path}, {e}")
+            return os.path.join(config.img_cache_folder_name, "no_image" + filename_end)
         width, height = img.size
 
         # convert png to jpg
