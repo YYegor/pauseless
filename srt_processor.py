@@ -132,7 +132,7 @@ def remove_srt_inclusions(text):
 def get_cleaned_srt_line(line: str) -> str:
     replacements = [
         "<i>", "</i>", "- ", " -", "'s", "'d", "'ve", "'ll", "[", "]", "…", "♪", '"', "$", "%", "—", "(", ")",
-        "#", "##", "''"
+        "#", "##", "''", ">>"
     ]
 
     cleaned_text = line
@@ -352,9 +352,9 @@ def console_play_srt(resulting_dict: dict):
 
 
 async def mainroutine():
-    srt_filename = "Severance.S01E01.Good.News.About.Hell.1080p.ATVP.WEB-DL.DDP5.1.Atmos.H.264-TEPES.srt"
-
-    print(await extract_words(srt_filename))
+    # srt_filename = "Severance.S01E01.Good.News.About.Hell.1080p.ATVP.WEB-DL.DDP5.1.Atmos.H.264-TEPES.srt"
+    srt_filename = "mn9q8pwJxsI.en-orig.srt"
+    print(await extract_words(srt_filename, series_name="Youtube show CBC British columbia. Struggling to learn a new language? Hear from the man who knows"))
 
 
 if __name__ == '__main__':

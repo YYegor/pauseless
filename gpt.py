@@ -82,12 +82,12 @@ class GPTGemini:
         request_input = (
             f"In this script line '{sentence}' from '{series_name}' TV series give a contextual definition "
             f"of '{word}' in one short sentence as in a dictionary, use context of the TV show and sentence, with simple words. "
-            f"Do not mention the TV show. Do not ask anything."
+            f"Do not mention the TV show. Do not mention the word in the question. Do not ask anything."
         )
 
         payload = {
             "contents": [{"parts": [{"text": request_input}]}],
-            "generationConfig": {"temperature": getattr(config, "GPT_temp", 0.7)},
+            "generationConfig": {"temperature": getattr(config, "GPT_temp", 0.2)},
         }
 
         client = get_httpx_client()
