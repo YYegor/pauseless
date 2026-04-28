@@ -1,9 +1,32 @@
 import os
 import logging
+from random import randint, shuffle
+from typing import Literal, cast
+
+import telegram
+
 import config
 import asyncio
 from telegram import BotCommand
 from telegram import LabeledPrice
+from mixpanel import Mixpanel, Consumer
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    ApplicationBuilder,
+    MessageHandler,
+    ContextTypes,
+    filters,
+    PollAnswerHandler,
+    CallbackQueryHandler, CallbackContext, ConversationHandler, CommandHandler
+)
+from telegram.constants import ChatAction
+from telegram.ext import PreCheckoutQueryHandler
+from find_subtitles import get_img_resized, parse_episodes, Opnsub, srt_cached
+from srt_processor import extract_words
+
+logging.getLogger("httpx").setLevel(logging.WARNING)
+poll_index_type = Literal[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+TG_BOT_KEY = os.environ.get('TG_BOT_KEY')
 
 # Enable logging for debug info
 logging.basicConfig(
@@ -11,10 +34,6 @@ logging.basicConfig(
     level=logging.INFO,
     filename=config.logs_filename
 )
-logging.getLogger("httpx").setLevel(logging.WARNING)
-
-
-from mixpanel import Mixpanel, Consumer
 
 class VerboseConsumer(Consumer):
     def send(self, endpoint, json_message):
@@ -24,21 +43,6 @@ class VerboseConsumer(Consumer):
         print(f"[Mixpanel track] response={resp}")
         return resp
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    ApplicationBuilder,
-    MessageHandler,
-    ContextTypes,
-    filters,
-    CallbackQueryHandler, CallbackContext, ConversationHandler, CommandHandler
-)
-from telegram.constants import ChatAction
-from telegram.ext import PreCheckoutQueryHandler
-
-from find_subtitles import get_img_resized, parse_episodes, Opnsub, srt_cached
-from srt_processor import extract_words
-
-TG_BOT_KEY = os.environ.get('TG_BOT_KEY')
 opn = Opnsub()
 
 MIXPANEL_TOKEN = os.environ.get('MIXPANEL_TOKEN')
@@ -75,6 +79,63 @@ async def get_top_series(update: Update, context: CallbackContext):
                                     f"Are you watching one of these hits?", reply_markup=reply_markup)
     await update.message.reply_text("Or let me help to find other shows. Just type the name.")
     return ConversationHandler.END
+
+
+async def show_poll(update: Update, context: CallbackContext):
+    index = context.user_data.get("card_index", 0)
+    cards = context.user_data.get("cards")
+
+    if not cards:
+        return
+
+    key = list(cards.keys())[index]
+    l = cards[key][0]
+    cards_index_max = len(cards) - 1
+
+    def truncate_options(text: str, limit: int = 100) -> str:
+        return text if len(text) <= limit else text[:limit - 3] + "..."
+
+    # 1. Define the correct answer
+    correct_answer = truncate_options(l['meaning'])
+
+    # 2. Collect 3 unique distractors
+    distractors = set()
+    while len(distractors) < 3:
+        key_ = list(cards.keys())[randint(0, cards_index_max)]
+        candidate = truncate_options(cards[key_][0]['meaning'])
+        if candidate != correct_answer:
+            distractors.add(candidate)
+
+    # 3. Create the final list and shuffle it
+    poll_options = [correct_answer] + list(distractors)
+    shuffle(poll_options)
+
+    # 4. Find the new index of the correct answer
+    correct_id = poll_options.index(correct_answer)
+
+    # 5. Determine chat_id (Fallback to user_data if called from PollAnswerHandler)
+    chat_id = update.effective_chat.id if update.effective_chat else context.user_data.get("chat_id")
+
+    # 6. Send the poll and save its message ID so we can delete it later
+    try:
+        ipa_part = f" ({l['ipa']})" if l['ipa'] else ""
+        poll_message = await context.bot.send_poll(
+            chat_id=chat_id,
+            question=f"[{index+1}/{len(cards)}] {l['word']}{ipa_part} means:",
+            options=poll_options,
+            is_anonymous=False,
+            allows_multiple_answers=False,
+            correct_option_id=cast(poll_index_type, correct_id),
+            type='quiz'
+        )
+
+        # Save tracking data for the next step
+        context.user_data["chat_id"] = chat_id
+        context.user_data["current_poll_message_id"] = poll_message.message_id
+
+    except (telegram.error.BadRequest, IndexError) as e:
+        logging.warning(f": {e}; {poll_options}")
+
 
 async def show_card(update: Update, last_message_id, context: CallbackContext):
 
@@ -121,9 +182,21 @@ async def buy(update, context: ContextTypes.DEFAULT_TYPE):
         start_parameter="multi"     # or single-chat behavior
     )
 
+async def yt(update: Update, context: CallbackContext):
+    await update.message.reply_text(
+        f"Youtube transcripts tool is coming soon")
+
+    safe_track(mp, str(update.message.chat_id), 'Youtube menu called', {
+        'username': update.message.from_user.username,
+        'first_name': update.message.from_user.first_name
+    })
+
+    return ConversationHandler.END
+
 async def start(update: Update, context: CallbackContext):
     user_id = update.message.chat_id
     context.user_data["card_index"] = 0
+    context.user_data["regime"] = "learn"
     context.user_data["cards"] = None
     args = context.args
     param = ""
@@ -144,6 +217,22 @@ async def start(update: Update, context: CallbackContext):
 
     return ConversationHandler.END
 
+async def quiz(update: Update, context: CallbackContext):
+
+    context.user_data["regime"] = "quiz"
+    context.user_data["card_index"] = 0
+
+    user_first_name = update.message.from_user.first_name or ''
+    if user_first_name:
+        user_first_name = ', ' + user_first_name
+
+    await update.message.reply_text(
+        f"Let's start the quiz{user_first_name}!")
+
+    safe_track(mp, str(update.message.chat_id), 'Quiz menu called', {})
+    await show_poll(update, context=context)
+
+    return ConversationHandler.END
 
 async def feedback(update: Update, context: CallbackContext):
     context.user_data["feedback_input_flag"] = True
@@ -334,7 +423,10 @@ async def cb_handler_episode_id(update: Update, context: CallbackContext):
                                         text=f"Episode '{title}'", parse_mode='Markdown')
         # remove unnecessary message
         await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=context.user_data["tap_vocab_message_id"])
+        # await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=context.user_data["card_last_message_id"])
+
         await show_card(update, last_message.message_id, context)
+        # await show_poll(update, context)
         # await query.message.reply_text("⭐ Rate the words set with /feedback or search for another episode.")
         # TODO: show the button for the next episode
     else:
@@ -377,7 +469,11 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             index = (index - 1) % len(cards)
 
         context.user_data["card_index"] = index
-        await show_card(update, context.user_data["card_last_message_id"], context=context)
+        if context.user_data["regime"] == "quiz":
+            await show_poll(update, context=context)
+        else:
+            await show_card(update, context.user_data["card_last_message_id"], context=context)
+
         return ConversationHandler.END
 
     if "show_id" in query.data:
@@ -402,13 +498,44 @@ async def on_successful_payment(update: Update, context: ContextTypes.DEFAULT_TY
     # TODO: grant user's premium features here (e.g., set a flag in DB)
 
 
+async def handle_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """ When voted in the poll, move to the next poll"""
+    cards = context.user_data.get("cards", None)
+
+    if cards:
+        # 1. Wait 1.5 seconds so the user sees the right/wrong animation
+        await asyncio.sleep(1.0)
+
+        chat_id = context.user_data.get("chat_id")
+        old_poll_message_id = context.user_data.get("current_poll_message_id")
+
+        # 2. Delete the old poll to create the "replacement" illusion
+        if chat_id and old_poll_message_id:
+            try:
+                await context.bot.delete_message(chat_id=chat_id, message_id=old_poll_message_id)
+            except telegram.error.BadRequest as e:
+                logging.warning(f"Could not delete old poll: {e}")
+
+        # 3. Move to the next card
+        index = context.user_data.get("card_index", 0)
+        index = (index + 1) % len(cards)
+        context.user_data["card_index"] = index
+
+        # 4. Show the new poll
+        await show_poll(update, context=context)
+
+    return ConversationHandler.END
+
 async def set_bot_commands(application):
     commands = [
         BotCommand("feedback", "Send feedback"),
         BotCommand("start", "Restart the bot"),
+        BotCommand("yt", "Read from Youtube"),
+
         # Add more commands here
     ]
     await application.bot.set_my_commands(commands)
+
 
 
 def main():
@@ -428,6 +555,10 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("feedback", feedback))
     application.add_handler(CommandHandler("premium", buy))
+    application.add_handler(CommandHandler("youtube", yt))
+    application.add_handler(CommandHandler("quiz", quiz))
+
+    application.add_handler(PollAnswerHandler(handle_vote))
 
     application.post_init = set_bot_commands
 

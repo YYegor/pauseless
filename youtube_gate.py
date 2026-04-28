@@ -19,7 +19,7 @@ async def is_youtube_link(url: str) -> bool:
     # defined inside the library for YouTube.
     return YoutubeIE.suitable(url)
 
-async def fetch_srt_for_video(url: str, lang_req: str) -> str | None:
+async def fetch_srt_for_video(url: str, lang_req: str = "en") -> str | None:
     """
     Download subtitles (uploaded, or fallback to automatic) for `url` in `lang_req`
     as .srt, store them in config.srt_cache_folder_name, and return the full path
@@ -34,7 +34,10 @@ async def fetch_srt_for_video(url: str, lang_req: str) -> str | None:
 
     # 1. Get info about available subtitles (uploaded + auto)
     def _extract_info():
-        with yt_dlp.YoutubeDL({"skip_download": True}) as ydl:
+        with yt_dlp.YoutubeDL({
+                "writeautomaticsub": True,
+                "subtitleslangs": [lang_req],
+                "skip_download": True}) as ydl:
             return ydl.extract_info(url, download=False)
 
     try:
@@ -52,7 +55,7 @@ async def fetch_srt_for_video(url: str, lang_req: str) -> str | None:
 
     uploaded_subs = info.get("subtitles") or {}
     auto_subs = info.get("automatic_captions") or {}
-
+    print (info)
     has_uploaded = lang_req in uploaded_subs
     has_auto = lang_req in auto_subs
 
@@ -131,8 +134,9 @@ async def fetch_srt_for_video(url: str, lang_req: str) -> str | None:
 
 
 async def main():
-    url = "https://www.youtube.com/watch?v=1sTNgmmL06Y"
-    path = await fetch_srt_for_video(url, "en")
+    # url = "https://www.youtube.com/watch?v=1sTNgmmL06Y"
+    url = "https://www.youtube.com/watch?v=mn9q8pwJxsI"
+    path = await fetch_srt_for_video(url, "en-orig")
     print("Got SRT:", path)
 
 asyncio.run(main())
