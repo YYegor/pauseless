@@ -118,9 +118,10 @@ async def show_poll(update: Update, context: CallbackContext):
 
     # 6. Send the poll and save its message ID so we can delete it later
     try:
+        ipa_part = f" ({l['ipa']})" if l['ipa'] else ""
         poll_message = await context.bot.send_poll(
             chat_id=chat_id,
-            question=f"{l['word']} ({l['ipa']}) means:",
+            question=f"[{index+1}/{len(cards)}] {l['word']}{ipa_part} means:",
             options=poll_options,
             is_anonymous=False,
             allows_multiple_answers=False,
@@ -135,57 +136,6 @@ async def show_poll(update: Update, context: CallbackContext):
     except (telegram.error.BadRequest, IndexError) as e:
         logging.warning(f": {e}; {poll_options}")
 
-# async def show_poll(update: Update, last_message_id, context: CallbackContext):
-#
-#     index = context.user_data.get("card_index", 0)
-#
-#     cards = context.user_data.get("cards")
-#     key = list(cards.keys())[index]
-#     l = cards[key][0]
-#
-#     cards_index_max = len(cards)-1
-#
-#     mark_popular = ''
-#     try:
-#         start_time = l['start'].split(",")[0]
-#     except (KeyError, IndexError):
-#         start_time = l['start']
-#
-#     if l['freq_srt'] > 2:
-#         mark_popular = '(popular in episode)'
-#
-#
-#     # 1. Define the correct answer
-#     correct_answer = l['meaning']
-#
-#     # 2. Collect 3 unique distractors (ensuring they aren't the same as the correct answer)
-#     distractors = set()
-#     while len(distractors) < 3:
-#         key_ = list(cards.keys())[randint(0, cards_index_max)]
-#         candidate = cards[key_][0]['meaning']
-#         if candidate != correct_answer:
-#             distractors.add(candidate)
-#
-#     # 3. Create the final list and shuffle it
-#     poll_options = [correct_answer] + list(distractors)
-#     shuffle(poll_options)
-#
-#     # 4. Find the new index of the correct answer
-#     correct_id = poll_options.index(correct_answer)
-#
-#     # 5. Send the poll
-#     try:
-#         await context.bot.send_poll(
-#             chat_id=update.effective_chat.id,
-#             question=f"{l['word']} ({l['ipa']}) means:",
-#             options=poll_options,
-#             is_anonymous=False,
-#             allows_multiple_answers=False,
-#             correct_option_id=cast(poll_index_type, correct_id),
-#             type='quiz'
-#         )
-#     except (telegram.error.BadRequest, IndexError) as e:
-#         logging.warning(f": {e}; {poll_options}")
 
 async def show_card(update: Update, last_message_id, context: CallbackContext):
 
@@ -246,6 +196,7 @@ async def yt(update: Update, context: CallbackContext):
 async def start(update: Update, context: CallbackContext):
     user_id = update.message.chat_id
     context.user_data["card_index"] = 0
+    context.user_data["regime"] = "learn"
     context.user_data["cards"] = None
     args = context.args
     param = ""
@@ -266,6 +217,22 @@ async def start(update: Update, context: CallbackContext):
 
     return ConversationHandler.END
 
+async def quiz(update: Update, context: CallbackContext):
+
+    context.user_data["regime"] = "quiz"
+    context.user_data["card_index"] = 0
+
+    user_first_name = update.message.from_user.first_name or ''
+    if user_first_name:
+        user_first_name = ', ' + user_first_name
+
+    await update.message.reply_text(
+        f"Let's start the quiz{user_first_name}!")
+
+    safe_track(mp, str(update.message.chat_id), 'Quiz menu called', {})
+    await show_poll(update, context=context)
+
+    return ConversationHandler.END
 
 async def feedback(update: Update, context: CallbackContext):
     context.user_data["feedback_input_flag"] = True
@@ -456,8 +423,10 @@ async def cb_handler_episode_id(update: Update, context: CallbackContext):
                                         text=f"Episode '{title}'", parse_mode='Markdown')
         # remove unnecessary message
         await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=context.user_data["tap_vocab_message_id"])
-        # await show_card(update, last_message.message_id, context)
-        await show_poll(update, context)
+        # await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=context.user_data["card_last_message_id"])
+
+        await show_card(update, last_message.message_id, context)
+        # await show_poll(update, context)
         # await query.message.reply_text("⭐ Rate the words set with /feedback or search for another episode.")
         # TODO: show the button for the next episode
     else:
@@ -500,8 +469,10 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             index = (index - 1) % len(cards)
 
         context.user_data["card_index"] = index
-        # await show_card(update, context.user_data["card_last_message_id"], context=context)
-        await show_poll(update, context=context)
+        if context.user_data["regime"] == "quiz":
+            await show_poll(update, context=context)
+        else:
+            await show_card(update, context.user_data["card_last_message_id"], context=context)
 
         return ConversationHandler.END
 
@@ -533,7 +504,7 @@ async def handle_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if cards:
         # 1. Wait 1.5 seconds so the user sees the right/wrong animation
-        await asyncio.sleep(1.5)
+        await asyncio.sleep(1.0)
 
         chat_id = context.user_data.get("chat_id")
         old_poll_message_id = context.user_data.get("current_poll_message_id")
@@ -554,26 +525,6 @@ async def handle_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_poll(update, context=context)
 
     return ConversationHandler.END
-# async def handle_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
-#     """ When voted in the poll, move to the next poll"""
-#     # Retrieve the answer object
-#     answer = update.poll_answer
-#
-#     poll_id = answer.poll_id
-#     user_id = answer.user.id
-#     username = answer.user.username
-#     selected_options = answer.option_ids  # This is a list, e.g., [0]
-#     cards = context.user_data.get("cards", None)
-#
-#     if cards:
-#         index = context.user_data.get("card_index", 0)
-#
-#         index = (index + 1) % len(cards)
-#
-#         context.user_data["card_index"] = index
-#         # await show_card(update, context.user_data["card_last_message_id"], context=context)
-#         await show_poll(update, context.user_data["card_last_message_id"], context=context)
-#         return ConversationHandler.END
 
 async def set_bot_commands(application):
     commands = [
@@ -605,6 +556,8 @@ def main():
     application.add_handler(CommandHandler("feedback", feedback))
     application.add_handler(CommandHandler("premium", buy))
     application.add_handler(CommandHandler("youtube", yt))
+    application.add_handler(CommandHandler("quiz", quiz))
+
     application.add_handler(PollAnswerHandler(handle_vote))
 
     application.post_init = set_bot_commands

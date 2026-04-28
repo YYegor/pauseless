@@ -21,7 +21,7 @@ import eng_to_ipa as ipa
 
 requests_cache.install_cache(backend='filesystem', expire_after=600 * 3)
 
-SIMULT_LIMIT = 10
+SIMULT_LIMIT = 15
 
 logging.basicConfig(
     format=config.logs_format,
@@ -132,7 +132,9 @@ def remove_srt_inclusions(text):
 def get_cleaned_srt_line(line: str) -> str:
     replacements = [
         "<i>", "</i>", "- ", " -", "'s", "'d", "'ve", "'ll", "[", "]", "…", "♪", '"', "$", "%", "—", "(", ")",
-        "#", "##", "''", ">>"
+        "#", "##", "''", ">>",
+        "II", "III", "IV",
+        "Mr.", "Dr."
     ]
 
     cleaned_text = line
@@ -147,11 +149,20 @@ def get_cleaned_srt_line(line: str) -> str:
     return cleaned_text
 
 
+# def get_time_index(word: str, parsed_srt):
+#     for i in parsed_srt:
+#         if word.lower() in parsed_srt[i]['text'].lower():
+#             return parsed_srt[i]['time'].split(" ")[0], parsed_srt[i]['time'].split(" ")[2]
+
+
 def get_time_index(word: str, parsed_srt):
+    pattern = re.compile(rf"(?<![a-z]){re.escape(word)}(?![a-z])", re.IGNORECASE)
+
     for i in parsed_srt:
-        if word.lower() in parsed_srt[i]['text'].lower():
+        if pattern.search(parsed_srt[i]['text']):
             return parsed_srt[i]['time'].split(" ")[0], parsed_srt[i]['time'].split(" ")[2]
 
+    return None, None
 
 def srt_parse_from_file(filename) -> dict:
     with open(os.path.join(config.srt_cache_folder_name, filename), 'r', encoding='utf-8-sig') as file:
@@ -201,44 +212,65 @@ async def process_words(w: str, srt_freq, srt_dict: dict, sem, series_name=''):
 
         # Fallback to GPT or Urban Dictionary
         sentence = ""
+        meaning = ""
         period = get_time_index(w, srt_dict)
 
-        if period:
+        if period[0] is not None:
+            print(w, period)
             for i in srt_dict:
                 if srt_dict[i]["time"].startswith(period[0]):
                     sentence = srt_dict[i]["text"]
                     break
+            if sentence:
+                if gptmodel:
+                    meaning = await gptmodel.get_word_meaning(w, series_name, sentence)
+                    dictionary_type = 'AI'
 
-        if gptmodel:
-            meaning = await gptmodel.get_word_meaning(w, series_name, sentence)
-            dictionary_type = 'AI'
+                if not meaning:
+                    logging.warning(f"No meaning found for {w}")
+                    return {}
 
-        if not meaning:
-            meaning = await get_urbandictionary_meaning_async(w)
-            dictionary_type = 'UD'
+                # Frequency of word in subtitle
+                srt_freq_w = srt_freq.get(w, 0)
 
-        # Frequency of word in subtitle
-        srt_freq_w = srt_freq.get(w, 0)
+                line_dict = {
+                        'start': period[0],
+                        'end': period[1],
+                        'word': w,
+                        'meaning': meaning,
+                        'freq_srt': srt_freq_w,
+                        'dict': dictionary_type,
+                        'sentence': sentence,
+                        'ipa': await escape_for_telegram_markup(ipa.convert(w))
+                    }
 
-        # Get timing and sentence
-        period = get_time_index(w, srt_dict)
-        if period:
-            sentence = ""
-            for i in srt_dict:
-                if srt_dict[i]["time"].startswith(period[0]):
-                    sentence = srt_dict[i]["text"]
-                    break
+    return line_dict
 
-            line_dict = {
-                'start': period[0],
-                'end': period[1],
-                'word': w,
-                'meaning': meaning,
-                'freq_srt': srt_freq_w,
-                'dict': dictionary_type,
-                'sentence': sentence,
-                'ipa': await escape_for_telegram_markup(ipa.convert(w))
-            }
+async def process_sentences(sentence: str, time_start, time_end, sem, series_name=''):
+
+    async with sem:
+        line_dict = {}
+        # skip short sentences, use only  len(sentence)>5
+        if len(sentence)>10 and gptmodel:
+            phrase_definition = await gptmodel.get_collocations_meaning(series_name, sentence)
+            if phrase_definition:
+
+                try:
+                    if "phrase in infinitive" in list(phrase_definition.keys())[0]:
+                        return line_dict
+                    line_dict = {
+                    'start': time_start,
+                    'end': time_end,
+                    'word': list(phrase_definition.keys())[0],
+                    'meaning': list(phrase_definition.values())[0],
+                    'freq_srt': 0,
+                    'dict': 'Collocations',
+                    'sentence': sentence,
+                    'ipa': ''
+                    }
+                except Exception as e:
+                    logging.error(f"Collocation failed {phrase_definition}")
+                    return line_dict
 
     return line_dict
 
@@ -288,6 +320,13 @@ async def extract_words(srt_filename: str, series_name='') -> dict:
             if words_freq[w] < 1:
                 tasks.append(process_words(w, srt_freq_dist, srt_dict, sem, series_name=series_name))
 
+        if config.collect_collocations:
+            # find collocations with AI:
+            for i in srt_dict:
+                time_start = srt_dict[i]['time'].split(" ")[0]
+                time_end = srt_dict[i]['time'].split(" ")[2]
+                tasks.append(process_sentences(srt_dict[i]['text'], time_start, time_end, sem, series_name=series_name))
+
         results = await asyncio.gather(*tasks)  # Process words asynchronously
         resulting_dict = {}
 
@@ -315,8 +354,12 @@ async def extract_words(srt_filename: str, series_name='') -> dict:
             key=lambda x: datetime.strptime(x[0].replace(",", "."), "%H:%M:%S.%f")
         )
     )
+    resulting_dict = filter_dicts_by_name(resulting_dict, "Collocations")
     return resulting_dict
 
+def filter_dicts_by_name (srt_dict: dict, filter_dict_name="AI") -> dict:
+    filtered_data = {k: [item for item in v if item.get("dict") != filter_dict_name] for k, v in srt_dict.items()}
+    return filtered_data
 
 def console_play_srt(resulting_dict: dict):
     loop_start_time = datetime.now()
@@ -353,8 +396,10 @@ def console_play_srt(resulting_dict: dict):
 
 async def mainroutine():
     # srt_filename = "Severance.S01E01.Good.News.About.Hell.1080p.ATVP.WEB-DL.DDP5.1.Atmos.H.264-TEPES.srt"
-    srt_filename = "mn9q8pwJxsI.en-orig.srt"
-    print(await extract_words(srt_filename, series_name="Youtube show CBC British columbia. Struggling to learn a new language? Hear from the man who knows"))
+    srt_filename = "For.All.Mankind.S01E01.1080p.WEB-DL.DD5.1.H.264-Tars.srt"
+    print(hash_srt_file("For.All.Mankind.S01E01.1080p.WEB-DL.DD5.1.H.264-Tars.srt"))
+
+    print(await extract_words(srt_filename, series_name="For All Mankind"))
 
 
 if __name__ == '__main__':
