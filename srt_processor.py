@@ -2,26 +2,27 @@ import nltk
 from nltk.corpus import brown
 from nltk.stem import WordNetLemmatizer
 from nltk.corpus import wordnet
-from nltk.probability import FreqDist
 import hashlib
 import json
 import re
-import requests
 import spacy
 import time
 from datetime import datetime, timedelta
 import os
 import logging
-
-import config
 import asyncio
 import requests_cache
+
+import config
 import gpt
 import eng_to_ipa as ipa
 
 requests_cache.install_cache(backend='filesystem', expire_after=600 * 3)
 
-SIMULT_LIMIT = 15
+# Separate concurrency limits: Network calls vs Local CPU processing
+API_CONCURRENT_LIMIT = 3  # Keep low to avoid Gemini 429 errors
+IPA_CONCURRENT_LIMIT = 20  # High because it's just local thread processing
+BATCH_SIZE = 30  # Number of items to send to Gemini per prompt
 
 logging.basicConfig(
     format=config.logs_format,
@@ -32,251 +33,99 @@ logging.basicConfig(
 gptmodel = gpt.GPTGemini()
 
 nlp = spacy.load("en_core_web_sm")
-nltk.download('wordnet')
-nltk.download('punkt')
-nltk.download('averaged_perceptron_tagger_eng')
+nltk.download('wordnet', quiet=True)
+nltk.download('punkt', quiet=True)
+nltk.download('averaged_perceptron_tagger_eng', quiet=True)
 lemmatizer = WordNetLemmatizer()
 
-words = brown.words()
-WORDS_FREQ_DIST = FreqDist(word.lower() for word in words)
+# OPTIMIZATION: Instant lookups for known corpus words
+BROWN_WORDS_SET = set(word.lower() for word in brown.words())
+CLEAN_SRT_PATTERN = re.compile(r'\{\\[^}]*\}|\{\\an\d\}|[-.!?0123456789:,\"]')
+
+
+def chunk_list(lst, n):
+    """Yield successive n-sized chunks from lst."""
+    for i in range(0, len(lst), n):
+        yield lst[i:i + n]
 
 
 def hash_srt_file(file_path, hash_algorithm="sha256"):
-    """Calculate hash of an SRT file based on its content."""
     hasher = hashlib.new(hash_algorithm)
-
     with open(os.path.join(config.srt_cache_folder_name, file_path), "rb") as f:
-        while chunk := f.read(8192):  # Read in chunks for efficiency
+        while chunk := f.read(8192):
             hasher.update(chunk)
-
     return hasher.hexdigest()
 
 
-async def check_if_name(word) -> bool:
-    doc = nlp(word)
-    first_names = [ent.text.split()[0] for ent in doc.ents if ent.label_ == "PERSON"]
-    if first_names:
-        return True
-    else:
-        return False
-
-
 async def escape_for_telegram_markup(text):
-    data = text.replace('[', '')
-    data = data.replace(']', '')
-    data = data.replace('\n', '')
-    data = data.replace('\r\r', ' ')
-    data = data.replace('"', '')
-    data = data.replace('`', """'""")
-    data = data.replace('*', "")
+    return text.translate(str.maketrans({
+        '[': '', ']': '', '\n': '', '\r': ' ', '"': '', '`': "'", '*': ''
+    }))
 
-    return data
-
-
-async def get_urbandictionary_meaning_async(word):
-    url = f"https://api.urbandictionary.com/v0/define?term={word}"
-    data = ''
-    response = requests.get(url)
-
-    if response.status_code == 200:
-        data = response.json()
-        try:
-            data = data['list'][0]['definition'].replace(']', '')
-        except IndexError:
-            logging.warning(f"UD: Can't find with {word}, {data}")
-            return 'unknown meaning'
-
-        data = await escape_for_telegram_markup(data)
-
-    if len(data) > 80:
-        data = data[:80] + '...'
-    return data
-
-
-async def get_meaning_wordnet_async(word):
-    synsets = wordnet.synsets(word)
-    meanings = [syn.definition() for syn in synsets]
-    return meanings
-
-
-# def get_wordnet_pos(word):
-#     tag = nltk.pos_tag([word])[0][1][0].upper()  # Get POS tag
-#     tag_dict = {"J": wordnet.ADJ, "N": wordnet.NOUN, "V": wordnet.VERB, "R": wordnet.ADV}
-#     return tag_dict.get(tag, wordnet.NOUN)  # Default to NOUN if not found
-
-
-def get_words_by_timedelta(srt_timestamp: timedelta, resulting_dict: dict):
-    for i in resulting_dict:
-        start_dt = datetime.strptime(resulting_dict[i][0]['start'], "%H:%M:%S,%f")
-        start_delta = timedelta(
-            hours=start_dt.hour,
-            minutes=start_dt.minute,
-            seconds=start_dt.second,
-            microseconds=start_dt.microsecond)
-
-        end_dt = datetime.strptime(resulting_dict[i][0]['end'], "%H:%M:%S,%f")
-        end_delta = timedelta(
-            hours=end_dt.hour,
-            minutes=end_dt.minute,
-            seconds=end_dt.second,
-            microseconds=end_dt.microsecond)
-
-        if start_delta <= srt_timestamp <= end_delta:
-            return {i: resulting_dict[i]}
-    return None
-
-def remove_srt_inclusions(text):
-    '''like inclusions like {\pos(982.5219)}'''
-    return re.sub(r"\{\\[^}]*\}", "", text)
 
 def get_cleaned_srt_line(line: str) -> str:
     replacements = [
-        "<i>", "</i>", "- ", " -", "'s", "'d", "'ve", "'ll", "[", "]", "…", "♪", '"', "$", "%", "—", "(", ")",
-        "#", "##", "''", ">>",
-        "II", "III", "IV",
-        "Mr.", "Dr."
+        "<i>", "</i>", "- ", " -", "'s", "'d", "'ve", "'ll", "…", "♪", "$", "%", "—", "(", ")",
+        "#", "##", "''", ">>", "II", "III", "IV", "Mr.", "Dr."
     ]
-
     cleaned_text = line
     for char in replacements:
         cleaned_text = cleaned_text.replace(char, " ")
 
-    cleaned_text = remove_srt_inclusions(cleaned_text)
-
-    cleaned_text = re.sub(r'\{\\an\d\}', '', cleaned_text)
-
-    cleaned_text = re.sub(r"[-.!?0123456789:,\"]", ' ', cleaned_text)
+    cleaned_text = CLEAN_SRT_PATTERN.sub(' ', cleaned_text)
     return cleaned_text
 
-
-# def get_time_index(word: str, parsed_srt):
-#     for i in parsed_srt:
-#         if word.lower() in parsed_srt[i]['text'].lower():
-#             return parsed_srt[i]['time'].split(" ")[0], parsed_srt[i]['time'].split(" ")[2]
-
-
-def get_time_index(word: str, parsed_srt):
-    pattern = re.compile(rf"(?<![a-z]){re.escape(word)}(?![a-z])", re.IGNORECASE)
-
-    for i in parsed_srt:
-        if pattern.search(parsed_srt[i]['text']):
-            return parsed_srt[i]['time'].split(" ")[0], parsed_srt[i]['time'].split(" ")[2]
-
-    return None, None
 
 def srt_parse_from_file(filename) -> dict:
     with open(os.path.join(config.srt_cache_folder_name, filename), 'r', encoding='utf-8-sig') as file:
         content = file.read().strip()
 
     subtitles = {}
-    blocks = re.split(r'\n\n+', content)  # Split by empty lines (blocks)
+    blocks = content.split('\n\n')
 
     for block in blocks:
         lines = block.strip().split('\n')
-
         if len(lines) >= 3:
             try:
-                index = int(lines[0].strip())  # Subtitle index
-            except ValueError as e:
-                logging.error(f"Error while parsing {lines[0]}, {e}")
-                return {}
+                index = int(lines[0].strip())
+            except ValueError:
+                continue
 
-            time_range = lines[1]  # Time range (e.g., 00:00:01,500 --> 00:00:04,000)
-            text = ' '.join(lines[2:])  # Combine text lines
-
+            time_range = lines[1]
+            text = ' '.join(lines[2:])
             subtitles[index] = {"time": time_range, "text": text}
 
     return subtitles
 
 
-def words_dump_as_json_by_hash(res_dict: dict, content_hash: str):
-    with open(content_hash + '.json', "w", encoding="utf-8") as f:
-        json.dump(res_dict, f, ensure_ascii=False, indent=4)
-
-
-def words_load_from_json_by_hash(content_hash: str) -> dict:
-    fn = content_hash + '.json'
-    if os.path.exists(fn):  # Check if file exists
-        with open(fn, "r", encoding="utf-8") as f:
-            return json.load(f)  # Load JSON into dictionary
-    else:
-        return {}  # Return None if file doesn't exist
-
-
-async def process_words(w: str, srt_freq, srt_dict: dict, sem, series_name=''):
+# --- API Fetching Wrappers ---
+async def fetch_word_chunk(chunk, series_name, sem):
     async with sem:
-        line_dict = {}
-        dictionary_type = 'default'
+        return await gptmodel.get_word_meanings_batch(chunk, series_name)
 
-        # Only process rare or unknown words
 
-        # Fallback to GPT or Urban Dictionary
-        sentence = ""
-        meaning = ""
-        period = get_time_index(w, srt_dict)
-
-        if period[0] is not None:
-            print(w, period)
-            for i in srt_dict:
-                if srt_dict[i]["time"].startswith(period[0]):
-                    sentence = srt_dict[i]["text"]
-                    break
-            if sentence:
-                if gptmodel:
-                    meaning = await gptmodel.get_word_meaning(w, series_name, sentence)
-                    dictionary_type = 'AI'
-
-                if not meaning:
-                    logging.warning(f"No meaning found for {w}")
-                    return {}
-
-                # Frequency of word in subtitle
-                srt_freq_w = srt_freq.get(w, 0)
-
-                line_dict = {
-                        'start': period[0],
-                        'end': period[1],
-                        'word': w,
-                        'meaning': meaning,
-                        'freq_srt': srt_freq_w,
-                        'dict': dictionary_type,
-                        'sentence': sentence,
-                        'ipa': await escape_for_telegram_markup(ipa.convert(w))
-                    }
-
-    return line_dict
-
-async def process_sentences(sentence: str, time_start, time_end, sem, series_name=''):
-
+async def fetch_colloc_chunk(chunk, series_name, sem):
     async with sem:
-        line_dict = {}
-        # skip short sentences, use only  len(sentence)>5
-        if len(sentence)>10 and gptmodel:
-            phrase_definition = await gptmodel.get_collocations_meaning(series_name, sentence)
-            if phrase_definition:
-
-                try:
-                    if "phrase in infinitive" in list(phrase_definition.keys())[0]:
-                        return line_dict
-                    line_dict = {
-                    'start': time_start,
-                    'end': time_end,
-                    'word': list(phrase_definition.keys())[0],
-                    'meaning': list(phrase_definition.values())[0],
-                    'freq_srt': 0,
-                    'dict': 'Collocations',
-                    'sentence': sentence,
-                    'ipa': ''
-                    }
-                except Exception as e:
-                    logging.error(f"Collocation failed {phrase_definition}")
-                    return line_dict
-
-    return line_dict
+        return await gptmodel.get_collocations_meaning_batch(chunk, series_name)
 
 
-def extract_words_sync(srt_filename: str, series_name: str = "") -> dict:
-    return asyncio.run(extract_words(srt_filename, series_name))
+# --- Finalizing Tasks ---
+async def finalize_word_data(context, meaning, freq, sem):
+    """Processes IPA and formatting locally after AI definition is retrieved."""
+    async with sem:
+        # Offload synchronous IPA processing to a thread
+        ipa_text = await asyncio.to_thread(ipa.convert, context['word'])
+        return {
+            'start': context['start'],
+            'end': context['end'],
+            'word': context['word'],
+            'meaning': meaning,
+            'freq_srt': freq,
+            'dict': 'AI',
+            'sentence': context['sentence'],
+            'ipa': await escape_for_telegram_markup(ipa_text)
+        }
+
 
 async def extract_words(srt_filename: str, series_name='') -> dict:
     try:
@@ -285,123 +134,212 @@ async def extract_words(srt_filename: str, series_name='') -> dict:
         logging.error(f"No srt file found {srt_filename}. Can't extract words")
         return {}
 
-    resulting_dict = words_load_from_json_by_hash(hash_from_content)
-    if resulting_dict:
-        logging.info(f"Cached data found for {srt_filename} of {len(resulting_dict)} words")
+    fn = hash_from_content + '.json'
+    if os.path.exists(fn):
+        with open(fn, "r", encoding="utf-8") as f:
+            logging.info(f"Cached data found for {srt_filename}")
+            return json.load(f)
 
-    else: # no cache
-        srt_dict = srt_parse_from_file(srt_filename)
-        words = []
-        for i in range(1, len(srt_dict)):
-            try:
-                clean_text = get_cleaned_srt_line(srt_dict[i]['text'])
-            except KeyError:
-                logging.error(f"{srt_filename} doesnt have {i} line")
-                continue
+    srt_dict = srt_parse_from_file(srt_filename)
 
-            for word in clean_text.split():
-                words.append(word)
+    # Context trackers
+    rare_words_context = {}
+    word_frequencies = {}
+    sentence_times = {}  # Used for collocations
 
-        # calc words stat from subtitle
-        srt_freq_dist = FreqDist(words)
+    # 1. Parse lines and collect targets
+    for i in srt_dict.values():
+        clean_text = get_cleaned_srt_line(i['text'])
+        time_start, _, time_end = i['time'].partition(" --> ")
+        original_sentence = i['text']
 
-        words_freq = {}
-        print(f"Frequency of words {len(words)}, {len(set(words))}")
-        words = list(set(words))
-        for word in words:
-            try:
-                words_freq[word] = WORDS_FREQ_DIST[word.lower()]
-            except KeyError:
-                words_freq[word] = -1
+        # Track sentence times for collocations
+        if len(original_sentence) > 10:
+            sentence_times[original_sentence] = (time_start, time_end)
 
-        sem = asyncio.Semaphore(SIMULT_LIMIT)
-        tasks = []
-        for w in words_freq:
-            if words_freq[w] < 1:
-                tasks.append(process_words(w, srt_freq_dist, srt_dict, sem, series_name=series_name))
+        for word in clean_text.split():
+            word_lower = word.lower()
+            word_frequencies[word_lower] = word_frequencies.get(word_lower, 0) + 1
 
-        if config.collect_collocations:
-            # find collocations with AI:
-            for i in srt_dict:
-                time_start = srt_dict[i]['time'].split(" ")[0]
-                time_end = srt_dict[i]['time'].split(" ")[2]
-                tasks.append(process_sentences(srt_dict[i]['text'], time_start, time_end, sem, series_name=series_name))
+            if word_lower not in BROWN_WORDS_SET and word_lower not in rare_words_context:
+                rare_words_context[word_lower] = {
+                    'word': word,  # Preserves Original Casing
+                    'start': time_start,
+                    'end': time_end,
+                    'sentence': original_sentence
+                }
 
-        results = await asyncio.gather(*tasks)  # Process words asynchronously
-        resulting_dict = {}
+    print(f"Total unique words in SRT: {len(word_frequencies)}, Rare words to process: {len(rare_words_context)}")
 
-        for res in results:
-            if res:
-                resulting_dict.setdefault(res['start'], []).append(res)
+    api_sem = asyncio.Semaphore(API_CONCURRENT_LIMIT)
 
-        resulting_dict = dict(
-            sorted(
-                resulting_dict.items(),
-                key=lambda x: datetime.strptime(x[0].replace(",", "."), "%H:%M:%S.%f")
-            )
-        )
+    # ==========================================
+    # 2. PROCESS WORDS IN BATCHES
+    # ==========================================
+    global_word_meanings = {}
+    if gptmodel and rare_words_context:
+        # Prepare payloads
+        word_payloads = [
+            {"word": ctx["word"], "sentence": ctx["sentence"]}
+            for ctx in rare_words_context.values()
+        ]
 
-        try:
-            words_dump_as_json_by_hash(resulting_dict, hash_from_content)
-        except IOError as e:
-            logging.error(f"Error while writing to cache words json file: {e}. No cache saved.")
-        return resulting_dict
+        # Create chunked tasks
+        word_tasks = [
+            fetch_word_chunk(chunk, series_name, api_sem)
+            for chunk in chunk_list(word_payloads, BATCH_SIZE)
+        ]
 
-    # TODO skip sorting if all cached data is sorted
-    resulting_dict = dict(
-        sorted(
-            resulting_dict.items(),
-            key=lambda x: datetime.strptime(x[0].replace(",", "."), "%H:%M:%S.%f")
-        )
-    )
-    resulting_dict = filter_dicts_by_name(resulting_dict, "Collocations")
+        # Await all API calls
+        print(f"Sending {len(word_tasks)} batches to Gemini for words...")
+        chunk_results = await asyncio.gather(*word_tasks)
+
+        # Merge dictionary results (Fallback to case-insensitive merging just in case Gemini changed cases)
+        for res in chunk_results:
+            for w, m in res.items():
+                global_word_meanings[w.lower()] = m
+
+    # ==========================================
+    # 3. PROCESS COLLOCATIONS IN BATCHES
+    # ==========================================
+    global_collocations = {}
+    if config.collect_collocations and gptmodel and sentence_times:
+        sentence_payloads = list(sentence_times.keys())
+        colloc_tasks = [
+            fetch_colloc_chunk(chunk, series_name, api_sem)
+            for chunk in chunk_list(sentence_payloads, BATCH_SIZE)
+        ]
+
+        print(f"Sending {len(colloc_tasks)} batches to Gemini for collocations...")
+        c_chunk_results = await asyncio.gather(*colloc_tasks)
+
+        for res in c_chunk_results:
+            global_collocations.update(res)
+
+    # ==========================================
+    # 4. LOCALLY COMPILE DATA (IPA & Formatting)
+    # ==========================================
+    ipa_sem = asyncio.Semaphore(IPA_CONCURRENT_LIMIT)
+    compile_tasks = []
+    resulting_dict = {}
+
+    # Queue Word Tasks
+    for word_lower, context in rare_words_context.items():
+        original_word = context['word']
+        # Try finding meaning by original case or lowercase fallback
+        meaning = global_word_meanings.get(original_word.lower())
+
+        if meaning:
+            freq = word_frequencies.get(word_lower, 0)
+            compile_tasks.append(finalize_word_data(context, meaning, freq, ipa_sem))
+
+    # Process all IPA/formatting concurrently
+    compiled_words = await asyncio.gather(*compile_tasks)
+
+    for item in compiled_words:
+        if item:
+            resulting_dict.setdefault(item['start'], []).append(item)
+
+    # Add Collocations manually (no IPA needed)
+    for sentence, col_data in global_collocations.items():
+        times = sentence_times.get(sentence)
+        if not times:
+            continue
+
+        time_start, time_end = times
+        for phrase, meaning in col_data.items():
+            if "phrase in infinitive" in phrase.lower():
+                continue  # Skip dummy returns
+
+            c_item = {
+                'start': time_start,
+                'end': time_end,
+                'word': phrase,
+                'meaning': meaning,
+                'freq_srt': 0,
+                'dict': 'Collocations',
+                'sentence': sentence,
+                'ipa': ''
+            }
+            resulting_dict.setdefault(time_start, []).append(c_item)
+
+    # ==========================================
+    # 5. SORT & SAVE
+    # ==========================================
+    # Sort purely alphabetically by string time (Fastest method)
+    resulting_dict = dict(sorted(resulting_dict.items(), key=lambda x: x[0]))
+
+    try:
+        with open(fn, "w", encoding="utf-8") as f:
+            json.dump(resulting_dict, f, ensure_ascii=False, indent=4)
+    except IOError as e:
+        logging.error(f"Error saving cache: {e}")
+
     return resulting_dict
 
-def filter_dicts_by_name (srt_dict: dict, filter_dict_name="AI") -> dict:
-    filtered_data = {k: [item for item in v if item.get("dict") != filter_dict_name] for k, v in srt_dict.items()}
-    return filtered_data
+
+# --- Existing Helpers Maintained ---
+def get_words_by_timedelta(srt_timestamp: timedelta, resulting_dict: dict):
+    for i in resulting_dict:
+        start_dt = datetime.strptime(resulting_dict[i][0]['start'], "%H:%M:%S,%f")
+        start_delta = timedelta(
+            hours=start_dt.hour, minutes=start_dt.minute,
+            seconds=start_dt.second, microseconds=start_dt.microsecond)
+
+        end_dt = datetime.strptime(resulting_dict[i][0]['end'], "%H:%M:%S,%f")
+        end_delta = timedelta(
+            hours=end_dt.hour, minutes=end_dt.minute,
+            seconds=end_dt.second, microseconds=end_dt.microsecond)
+
+        if start_delta <= srt_timestamp <= end_delta:
+            return {i: resulting_dict[i]}
+    return None
+
+
+def filter_dicts_by_name(srt_dict: dict, filter_dict_name="AI") -> dict:
+    return {
+        k: filtered_list
+        for k, v in srt_dict.items()
+        if (filtered_list := [item for item in v if item.get("dict") != filter_dict_name])
+    }
+
 
 def console_play_srt(resulting_dict: dict):
     loop_start_time = datetime.now()
+    if not resulting_dict:
+        return
 
     last_key = list(resulting_dict.keys())[-1]
     full_end_dt = datetime.strptime(resulting_dict[last_key][0]['end'], "%H:%M:%S,%f")
     full_end_delta = timedelta(
-        hours=full_end_dt.hour,
-        minutes=full_end_dt.minute,
-        seconds=full_end_dt.second,
-        microseconds=full_end_dt.microsecond)
+        hours=full_end_dt.hour, minutes=full_end_dt.minute,
+        seconds=full_end_dt.second, microseconds=full_end_dt.microsecond)
 
     print()
     index_shown = None
     while True:
-        # Get elapsed time
         current_time = datetime.now() - loop_start_time
-        # print(current_time)
-
         words_item = get_words_by_timedelta(current_time, resulting_dict)
-        # print(words_item)
+
         if words_item and index_shown != next(iter(words_item.keys())):
             for item in words_item[next(iter(words_item.keys()))]:
                 print(f"{item['word']:15} - {item['meaning']}")
             index_shown = next(iter(words_item.keys()))
 
-        # Exit loop after end_time has passed
         if current_time > full_end_delta:
             print("Time range ended. Exiting loop.")
             break
-
-        time.sleep(0.2)  # Sleep to reduce CPU usage
+        time.sleep(0.2)
 
 
 async def mainroutine():
-    # srt_filename = "Severance.S01E01.Good.News.About.Hell.1080p.ATVP.WEB-DL.DDP5.1.Atmos.H.264-TEPES.srt"
     srt_filename = "For.All.Mankind.S01E01.1080p.WEB-DL.DD5.1.H.264-Tars.srt"
-    print(hash_srt_file("For.All.Mankind.S01E01.1080p.WEB-DL.DD5.1.H.264-Tars.srt"))
-
-    print(await extract_words(srt_filename, series_name="For All Mankind"))
+    print(hash_srt_file(srt_filename))
+    result = await extract_words(srt_filename, series_name="For All Mankind")
+    print(result)
+    # Uncomment to test playback:
+    # console_play_srt(result)
 
 
 if __name__ == '__main__':
-    #print (hash_srt_file('Severance.S01E01.Good.News.About.Hell.1080p.ATVP.WEB-DL.DDP5.1.Atmos.H.264-TEPES.srt'))
     asyncio.run(mainroutine())
