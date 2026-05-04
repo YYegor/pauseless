@@ -47,9 +47,17 @@ class Opnsub:
         }
 
         requests_cache.install_cache(backend='filesystem', expire_after=600 * 3)
-    def get_seasons_list(self, raw_response_feature:dict):
-        seasons_list = raw_response_feature['']
-        pass
+    def get_seasons_number(self, feature_id:int):
+        count = 0
+        raw_data = self.get_features(None, feature_id=feature_id, show_type="feature")
+        #print(raw_data)
+        if raw_data:
+            for season in raw_data[0]['attributes']['seasons']:
+                if len(season['episodes'])>0:
+                    count += 1
+
+            return count
+        return 0
 
     def download_file(self, url: str, save_path: str) -> bool:
         """
@@ -147,14 +155,19 @@ class Opnsub:
             logging.error(f"Error: {response.status_code}")
             return []
 
-    def get_features(self, query, show_type="tvshow", lang="en") -> list:
-        query = query.replace('"', ' ')
-        query = query.replace("'", ' ')
-        query = query.replace("&", ' ')
+    def get_features(self, query, show_type="tvshow", lang="en", feature_id=None) -> list[dict]:
+        if query:
+            query = query.replace('"', ' ')
+            query = query.replace("'", ' ')
+            query = query.replace("&", ' ')
 
-        api_url = self.api_url_base + '/features?query=' + query + "&type=" + show_type
+        #api_url = f"{self.api_url_base}/features/{feature_id}?query={query}&type={show_type}"
+        api_url = f"{self.api_url_base}/features"
         params = {
-            "languages": lang
+            "languages": lang,
+            "type": show_type,
+            "feature_id": feature_id,
+            "query": query
         }
         logging.info(f"Features call with p:{params}")
         response = regular_requests.get(api_url, headers=self.headers, params=params)
@@ -199,6 +212,11 @@ class Opnsub:
         else:
             logging.error(f"Error: {response.status_code}, {response.text}, {parent_feature_id}, {season}")
             return []
+
+    def get_episodes(self, show_id: int, season=1) -> None | dict:
+        episodes_raw_data = self.get_srt_names(show_id, season=season)
+        if episodes_raw_data:
+            return parse_episodes(episodes_raw_data)
 
     def get_srt_names(self, parent_feature_id: int, season=1, year=0, lang="en") -> dict:
         api_url = self.api_url_base + '/subtitles'
@@ -298,15 +316,17 @@ def srt_cached(file_name: str) -> bool:
 if __name__ == '__main__':
     opn = Opnsub()
     #print(opn.suggestion_wrapper(opn.get_features("better call")))
-    print(opn.get_features('Money Heist'))
+    #resp = opn.get_features('Emily in Paris')
+    #print(resp)
+    print (opn.get_seasons_number("1110654"))
     # suggestions = opn.get_suggestions('South Park')
     # # 'https://www.opensubtitles.org/gfx/thumbs/4/9/0/6/13406094-t.jpg'
     # print(suggestions)
     # y = Youtube()
     # y.download_srt('https://www.youtube.com/watch?v=4muxFVZ4XfM&ab_channel=Lenny%27sPodcast')
     # "https://www.opensubtitles.com/nocache/search/en?current_languages=all&episode_number=all&hearing_impaired=hearing_impaired-1&machine_translated=machine_translated-1&q=osdb%3A1180031&search_in=tvshows&season_number=all&trusted_sources=trusted_sources-1"
-    # series_data = opn.get_srt_names(parent_feature_id=7160)
-    # print(parse_episodes(series_data))
+    # series_data = opn.get_srt_names(parent_feature_id=7160, season=None, lang="en")
+    # print (series_data)
     # download_info = (opn.get_srt_download_url(9022929))
     # if download_info:
     #     opn.download_file(download_info['link'], download_info['file_name'])
