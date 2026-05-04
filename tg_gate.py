@@ -375,7 +375,7 @@ async def cb_handler_show_id(update: Update, context: CallbackContext):
                 # prepare Season list buttons
                 keyboard = [
                     [
-                        InlineKeyboardButton(f"Season {i}", callback_data=f"season_n:{i}")
+                        InlineKeyboardButton(f"{i}", callback_data=f"season_n:{i}")
                         for i in range(1, season_number + 1)
                     ]
                 ]
@@ -606,7 +606,7 @@ async def set_bot_commands(application):
     commands = [
         BotCommand("feedback", "Send feedback"),
         BotCommand("start", "Restart the bot"),
-        BotCommand("yt", "Read from Youtube"),
+        #BotCommand("yt", "Read from Youtube"),
     ]
     await application.bot.set_my_commands(commands)
 
