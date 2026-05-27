@@ -1,10 +1,11 @@
 import os
+import re
 import asyncio
 import logging
+from typing import Tuple
 
 import yt_dlp
 import config
-
 
 logging.basicConfig(
     format=config.logs_format,
@@ -14,129 +15,175 @@ logging.basicConfig(
 
 from yt_dlp.extractor.youtube import YoutubeIE
 
+
 async def is_youtube_link(url: str) -> bool:
-    # .suitable() checks if the URL matches the regex patterns
-    # defined inside the library for YouTube.
     return YoutubeIE.suitable(url)
 
-async def fetch_srt_for_video(url: str, lang_req: str = "en") -> str | None:
-    """
-    Download subtitles (uploaded, or fallback to automatic) for `url` in `lang_req`
-    as .srt, store them in config.srt_cache_folder_name, and return the full path
-    to the .srt file. Returns None if nothing could be obtained.
 
-    The function is async and uses asyncio.to_thread to avoid blocking the event loop.
+def convert_vtt_to_srt(vtt_path: str, srt_path: str):
     """
-    # Ensure cache folder exists
+    Pure Python VTT to SRT converter.
+    Removes the need for ffmpeg!
+    """
+    with open(vtt_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+
+    # 1. Remove WEBVTT header and any global metadata
+    content = re.sub(r'^WEBVTT.*?\n', '', content, flags=re.MULTILINE)
+    content = re.sub(r'^Kind:.*?\n', '', content, flags=re.MULTILINE)
+    content = re.sub(r'^Language:.*?\n', '', content, flags=re.MULTILINE)
+
+    lines = content.split('\n')
+    srt_lines = []
+    sub_idx = 1
+
+    for line in lines:
+        if '-->' in line:
+            # SRT requires a subtitle sequence number
+            if srt_lines and srt_lines[-1] != "":
+                srt_lines.append("")
+            srt_lines.append(str(sub_idx))
+            sub_idx += 1
+
+            # Extract and fix timestamps
+            # VTT: 00:05.000 --> 00:07.000 align:start
+            # SRT: 00:00:05,000 --> 00:00:07,000
+            timestamps = line.split('-->')
+            start_ts = timestamps[0].strip().split(' ')[0]
+            end_ts = timestamps[1].strip().split(' ')[0]
+
+            def format_ts(ts):
+                ts = ts.replace('.', ',')  # SRT uses commas for milliseconds
+                if ts.count(':') == 1:  # If missing hours (MM:SS,mmm), add them
+                    ts = '00:' + ts
+                return ts
+
+            srt_lines.append(f"{format_ts(start_ts)} --> {format_ts(end_ts)}")
+        else:
+            # Clean up YouTube's inline tags in auto-subs (e.g., <c>, </c>, <00:00:01.000>)
+            clean_line = re.sub(r'<[^>]+>', '', line)
+
+            # Prevent multiple blank lines in a row
+            if clean_line.strip() == "" and (not srt_lines or srt_lines[-1] == ""):
+                continue
+
+            srt_lines.append(clean_line)
+
+    # Write the formatted SRT file
+    with open(srt_path, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(srt_lines).strip() + '\n')
+
+
+async def fetch_srt_for_video(url: str, lang_req: str = "en") -> Tuple[str | None, str | None]:
+    """
+    Download VTT subtitles matching `lang_req` prefix and convert to SRT in Python.
+    """
     cache_dir = config.srt_cache_folder_name
     os.makedirs(cache_dir, exist_ok=True)
-    logging.info("Using SRT cache folder: %s", cache_dir)
 
-    # 1. Get info about available subtitles (uploaded + auto)
     def _extract_info():
         with yt_dlp.YoutubeDL({
-                "writeautomaticsub": True,
-                "subtitleslangs": [lang_req],
-                "skip_download": True}) as ydl:
+            "writeautomaticsub": True,
+            "skip_download": True}) as ydl:
             return ydl.extract_info(url, download=False)
 
     try:
         info = await asyncio.to_thread(_extract_info)
     except Exception as e:
         logging.error("Failed to extract video info for %s: %s", url, e)
-        return None
+        return None, None
 
     video_id = info.get("id")
+    title = info.get("title", "Unknown show")
+
     if not video_id:
-        logging.error("No video ID found for URL %s", url)
-        return None
+        return None, None
 
-    logging.info("Video id: %s", video_id)
+    # Define final intended SRT path
+    final_srt_path = os.path.join(cache_dir, f"{video_id}.{lang_req}.srt")
+    if os.path.exists(final_srt_path):
+        logging.info("Returning cached SRT: %s", final_srt_path)
+        return final_srt_path, title
 
+    # Search for requested language
+    lang_req_lower = lang_req.lower()
     uploaded_subs = info.get("subtitles") or {}
     auto_subs = info.get("automatic_captions") or {}
-    print (info)
-    has_uploaded = lang_req in uploaded_subs
-    has_auto = lang_req in auto_subs
 
-    logging.info(
-        "Subtitle availability for %s: uploaded=%s, automatic=%s",
-        lang_req,
-        has_uploaded,
-        has_auto,
-    )
+    target_uploaded_lang = next((k for k in uploaded_subs if k.lower().startswith(lang_req_lower)), None)
+    target_auto_lang = next((k for k in auto_subs if k.lower().startswith(lang_req_lower)), None)
 
-    if not has_uploaded and not has_auto:
-        logging.warning(
-            "No subtitles (uploaded or auto) found for language '%s' in video %s",
-            lang_req,
-            video_id,
-        )
-        return None
+    if not target_uploaded_lang and not target_auto_lang:
+        logging.warning("No subtitles found for prefix '%s' in video %s", lang_req, video_id)
+        return None, None
 
-    # Decide which type to download
-    use_auto = not has_uploaded and has_auto
-    logging.info(
-        "Will use %s subtitles for language '%s'",
-        "automatic" if use_auto else "uploaded",
-        lang_req,
-    )
+    use_auto = target_uploaded_lang is None
+    chosen_lang = target_auto_lang if use_auto else target_uploaded_lang
 
-    # 2. Prepare yt-dlp options for subtitle-only download in .srt
-    srt_target_path = os.path.join(cache_dir, f"{video_id}.srt")
-
+    # yt-dlp Options: Request strictly native formats (VTT), no post-processors required
     ydl_opts = {
-        "writesub": not use_auto,         # True if using uploaded subs
-        "writeautomaticsub": use_auto,    # True if using auto subs
-        "subtitleslangs": [lang_req],
-        "subtitlesformat": "srt",         # ask yt-dlp to convert to srt if needed
-        "skip_download": True,            # don't download video
+        "writesub": not use_auto,
+        "writeautomaticsub": use_auto,
+        "subtitleslangs": [chosen_lang],
+        "subtitlesformat": "vtt/best",  # Natively get VTT
+        "skip_download": True,
         "outtmpl": os.path.join(cache_dir, f"{video_id}.%(ext)s"),
-        "quiet": True,
-        "no_warnings": False,
+        "quiet": False,
+        "no_warnings": True,
     }
 
     def _download_subs():
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ret_code = ydl.download([url])
             if ret_code != 0:
-                raise Exception("Srt download failed")
-            logging.info("SRT subtitle file saved as: %s", srt_target_path)
+                raise Exception("Subtitle download failed")
 
     try:
-        logging.info("Starting subtitle download for %s", url)
+        logging.info("Downloading native subtitles for %s", url)
         await asyncio.to_thread(_download_subs)
     except Exception as e:
-        logging.error(
-            "Error while executing subtitles for %s (lang=%s): %s",
-            url,
-            lang_req,
-            e,
-        )
-        return None
+        logging.error("Error downloading subtitles: %s", e)
+        return None, None
 
-
-
-    # 4. Cleanup: remove any non-.srt files for this video id in cache folder
+    # Find the downloaded file
     prefix = f"{video_id}."
+    downloaded_vtt = None
+
     for fname in os.listdir(cache_dir):
         if not fname.startswith(prefix):
             continue
-        if not fname.endswith(".srt"):
-            temp_path = os.path.join(cache_dir, fname)
-            try:
-                os.remove(temp_path)
-                logging.info("Removed temp file: %s", temp_path)
-            except OSError as e:
-                logging.warning("Failed to remove temp file %s: %s", temp_path, e)
+        if fname.endswith((".vtt", ".srv3", ".json3")):
+            downloaded_vtt = os.path.join(cache_dir, fname)
+            break
 
-    return srt_target_path
+    if downloaded_vtt:
+        try:
+            # Convert the native file to our perfect SRT file using our custom Python function
+            convert_vtt_to_srt(downloaded_vtt, final_srt_path)
+            logging.info("Converted %s to pure SRT: %s", downloaded_vtt, final_srt_path)
+        except Exception as e:
+            logging.error("Failed to convert VTT to SRT: %s", e)
+            return None, None
+
+        # Clean up all the leftover yt-dlp temp files (including the original .vtt)
+        for fname in os.listdir(cache_dir):
+            if fname.startswith(prefix) and fname != f"{video_id}.{lang_req}.srt":
+                try:
+                    os.remove(os.path.join(cache_dir, fname))
+                except OSError:
+                    pass
+
+        return final_srt_path, title
+
+    logging.error("Download succeeded, but no subtitle file was found in cache.")
+    return None, None
 
 
 async def main():
-    # url = "https://www.youtube.com/watch?v=1sTNgmmL06Y"
-    url = "https://www.youtube.com/watch?v=mn9q8pwJxsI"
-    path = await fetch_srt_for_video(url, "en-orig")
-    print("Got SRT:", path)
+    url = "https://www.youtube.com/watch?v=7N68NjL9cMA"
+    path, title = await fetch_srt_for_video(url, "en")
+    print(f"Got SRT: {path}")
 
-asyncio.run(main())
+
+if __name__ == '__main__':
+    asyncio.run(main())

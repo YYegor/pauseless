@@ -333,9 +333,9 @@ def console_play_srt(resulting_dict: dict):
 
 
 async def mainroutine():
-    srt_filename = "For.All.Mankind.S01E01.1080p.WEB-DL.DD5.1.H.264-Tars.srt"
+    srt_filename = "5MuIMqhT8DM.en-orig.srt"
     print(hash_srt_file(srt_filename))
-    result = await extract_words(srt_filename, series_name="For All Mankind")
+    result = await extract_words(srt_filename, series_name="Sleep Is Your Superpower | Matt Walker | TED")
     print(result)
     # Uncomment to test playback:
     # console_play_srt(result)

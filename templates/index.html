@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Мой Telegram Файл</title>
+    <!-- Telegram WebApp API -->
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <!-- Vue 3 -->
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <style>
+        /* Интеграция цветов темы Telegram */
+        body {
+            background-color: var(--tg-theme-bg-color, #ffffff);
+            color: var(--tg-theme-text-color, #000000);
+        }
+        .tg-card {
+            background-color: var(--tg-theme-secondary-bg-color, #f3f4f6);
+        }
+        .tg-button {
+            background-color: var(--tg-theme-button-color, #3b82f6);
+            color: var(--tg-theme-button-text-color, #ffffff);
+        }
+    </style>
+</head>
+<body class="p-4">
+
+<div id="app" class="max-w-md mx-auto">
+    <!-- Шапка -->
+    <div class="mb-4 text-center">
+        <h2 class="text-xl font-bold">Привет, {{ userName }}!</h2>
+        <p class="text-sm opacity-70">Ваш ID: {{ userId || 'загрузка...' }}</p>
+    </div>
+
+    <!-- Индикатор загрузки -->
+    <div v-if="isLoading" class="text-center p-4">
+        <p class="animate-pulse">Чтение файла с сервера...</p>
+    </div>
+
+    <!-- Ошибка -->
+    <div v-else-if="errorMessage" class="bg-red-100 text-red-700 p-3 rounded-lg mb-4 text-sm">
+        {{ errorMessage }}
+    </div>
+
+    <!-- Контент файла -->
+    <div v-else class="tg-card rounded-lg p-4 shadow-sm">
+        <h3 class="font-semibold mb-2">Содержимое файла:</h3>
+        <pre class="text-sm whitespace-pre-wrap font-mono">{{ fileContent }}</pre>
+    </div>
+
+    <!-- Кнопка закрытия -->
+    <button @click="closeApp" class="tg-button w-full mt-6 py-3 rounded-xl font-semibold transition-opacity hover:opacity-80">
+        Закрыть
+    </button>
+</div>
+
+<script>
+    const { createApp } = Vue;
+
+    createApp({
+        data() {
+            return {
+                tg: window.Telegram.WebApp,
+                userName: 'Гость',
+                userId: null,
+                fileContent: '',
+                isLoading: true,
+                errorMessage: ''
+            }
+        },
+        mounted() {
+            this.tg.ready();
+            this.tg.expand(); // Открыть на весь экран
+
+            // Получаем unsafe данные чисто для UI
+            const user = this.tg.initDataUnsafe?.user;
+            if (user) {
+                this.userName = user.first_name;
+            }
+
+            // Запрашиваем файл с бэкенда
+            this.fetchData();
+        },
+        methods: {
+            async fetchData() {
+                try {
+                    const response = await fetch('/api/get_file', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        // Отправляем сырой initData для секьюрной проверки на сервере!
+                        body: JSON.stringify({ initData: this.tg.initData })
+                    });
+
+                    const data = await response.json();
+
+                    if (response.ok) {
+                        this.fileContent = data.content;
+                        this.userId = data.user_id;
+                    } else {
+                        this.errorMessage = data.error || 'Неизвестная ошибка';
+                    }
+                } catch (e) {
+                    this.errorMessage = 'Ошибка соединения с сервером.';
+                } finally {
+                    this.isLoading = false;
+                }
+            },
+            closeApp() {
+                this.tg.close();
+            }
+        }
+    }).mount('#app');
+</script>
+
+</body>
+</html>

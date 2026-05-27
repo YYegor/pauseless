@@ -4,7 +4,7 @@ from random import randint, shuffle
 from typing import Literal, cast
 from broadcast import command_broadcast, command_test
 import telegram
-
+from youtube_gate import fetch_srt_for_video
 import config
 import asyncio
 from telegram import BotCommand
@@ -23,6 +23,7 @@ from telegram.constants import ChatAction
 from telegram.ext import PreCheckoutQueryHandler
 from find_subtitles import get_img_resized, Opnsub, srt_cached
 from srt_processor import extract_words
+from telegram import Update, MessageEntity
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 poll_index_type = Literal[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
@@ -78,9 +79,11 @@ async def get_top_series(update: Update, context: CallbackContext):
     for k in response_dict:
         context.user_data[k] = response_dict[k]['caption']
 
-    await update.message.reply_text(f"I'll prep your vocab so you won't need to pause while watching.\n"
+    phrase_start_top = await update.message.reply_text(f"I'll prep your vocab so you won't need to pause while watching.\n"
                                     f"Are you watching one of these hits?", reply_markup=reply_markup)
-    await update.message.reply_text("Or let me help to find other shows. Just type the name.")
+    context.user_data["phrase_start_top"] = phrase_start_top.message_id
+    phrase_3 = await update.message.reply_text("Or let me help to find other shows. Just type the name.")
+    context.user_data["phrase_3"] = phrase_3.message_id
     return ConversationHandler.END
 
 
@@ -156,11 +159,12 @@ async def show_card(update: Update, last_message_id, context: CallbackContext):
 
     if l['freq_srt'] > 2:
         mark_popular = '(popular in episode)'
+    ipa_part = f" ({l['ipa']})" if l['ipa'] else ""
 
     text = (f"🕑{start_time} *{l['word']}*"
-            f" ({l['ipa']})\n" + "-" * 45 + "\n"
-                                            f" {l['meaning']} {mark_popular}\n"
-                                            f"{index + 1}/{len(cards)}")
+            f" {ipa_part}\n" +
+                             f"\n {l['meaning']} {mark_popular}\n"
+                             f"{index + 1}/{len(cards)}")
 
     keyboard = [
         [
@@ -196,6 +200,7 @@ async def buy(update, context: ContextTypes.DEFAULT_TYPE):
 
 async def yt(update: Update, context: CallbackContext):
     await update.message.reply_text(f"Youtube transcripts tool is coming soon")
+
     safe_track(mp, str(update.message.chat_id), 'Youtube menu called', {
         'username': update.message.from_user.username,
         'first_name': update.message.from_user.first_name
@@ -204,7 +209,10 @@ async def yt(update: Update, context: CallbackContext):
 
 
 async def start(update: Update, context: CallbackContext):
-    user_id = update.effective_user
+    try:
+        user = update.effective_user
+    except:
+        user = None
     context.user_data["card_index"] = 0
     context.user_data["regime"] = "learn"
     context.user_data["cards"] = None
@@ -216,10 +224,12 @@ async def start(update: Update, context: CallbackContext):
     if args:
         param = args[0]
 
-    safe_track(mp, str(user_id), 'Bot Started', {
+    safe_track(mp, str(user.id), 'Bot Started', {
         'username': update.message.from_user.username,
         'first_name': update.message.from_user.first_name,
-        'start_parameter': param
+        'start_parameter': param,
+        'language_code_tg' : user.language_code,
+        'premium_tg': user.is_premium
     })
     context.user_data["feedback_input_flag"] = False
     user_first_name = update.message.from_user.first_name or ''
@@ -285,7 +295,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Sent! 🙏", reply_markup=None)
         return ConversationHandler.END
 
-    await update.message.reply_text("Looking...", reply_markup=None)
+    urls = []
+    for entity in update.message.entities:
+        if entity.type == MessageEntity.URL:
+            # Extract the URL string from the text using offset and length
+            url = update.message.text[entity.offset: entity.offset + entity.length]
+            urls.append(url)
+
+        elif entity.type == MessageEntity.TEXT_LINK:
+            # For hyperlinked text, the URL is stored in the 'url' attribute
+            urls.append(entity.url)
+    if urls:
+        url = urls[0] # only one URL is expected in the message
+        if 'youtube.com' in url or 'youtu.be' in url:
+            await update.message.reply_text("Youtube link...", reply_markup=None)
+            context.application.create_task(yt_handler(url, update, context))
+        return ConversationHandler.END
+
+    phrase_looking = await update.message.reply_text("Looking...", reply_markup=None)
+    context.user_data["phrase_looking"] = phrase_looking.message_id
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
 
     # refresh cards, reset
@@ -314,6 +342,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         safe_track(mp, str(update.effective_chat.id), 'Warning: No suggestions', {
             'query': user_query,
         })
+
     return ConversationHandler.END
 
 
@@ -380,8 +409,8 @@ async def cb_handler_show_id(update: Update, context: CallbackContext):
                     ]
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
-                await query.message.reply_text("Switch seasons:", reply_markup=reply_markup, parse_mode='Markdown')
-
+                phrase_switch = await query.message.reply_text("Switch seasons:", reply_markup=reply_markup, parse_mode='Markdown')
+                context.user_data["phrase_switch"] = phrase_switch.message_id
                 tap_vocab_message = await query.message.reply_text("Tap to explore the vocab.", reply_markup=None)
                 context.user_data["tap_vocab_message_id"] = tap_vocab_message.message_id
 
@@ -396,6 +425,14 @@ async def cb_handler_show_id(update: Update, context: CallbackContext):
         # Release the lock for show clicking
         context.user_data["is_processing_show"] = False
 
+async def del_message(update: Update, context: CallbackContext, msg_id_tag:str):
+    try:
+        await context.bot.delete_message(chat_id=update.effective_chat.id,
+                                         message_id=context.user_data.get(msg_id_tag))
+        context.user_data[msg_id_tag] = None
+
+    except telegram.error.BadRequest:
+        pass
 
 async def cb_handler_episode_id(update: Update, context: CallbackContext):
     try:
@@ -480,6 +517,85 @@ async def cb_handler_episode_id(update: Update, context: CallbackContext):
             except telegram.error.BadRequest:
                 pass
 
+            await del_message(update, context, "tap_vocab_message_id")
+            await del_message(update, context, "phrase_switch")
+            await del_message(update, context, "phrase_start_top")
+            await del_message(update, context, "phrase_3")
+
+            await show_card(update, last_message.message_id, context)
+        else:
+            safe_track(mp, str(update.effective_chat.id), 'Error: Episode extraction failed', {
+                'episode_id': episode_id,
+                'title': title,
+                'show_id': context.user_data.get("show_id")
+            })
+
+            # FIX: Edit the hanging "Processing..." message if no words were found
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=update.effective_chat.id,
+                    message_id=last_message.message_id,
+                    text="☁️ Didn't find any useful vocab for this episode."
+                )
+            except telegram.error.BadRequest:
+                pass
+
+    finally:
+        # FIX: Release the background task lock
+        context.user_data["is_processing_episode"] = False
+
+async def yt_handler(url: str, update: Update, context: CallbackContext):
+    try:
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+
+        file_name, yt_show_title = await fetch_srt_for_video(url, lang_req="en-orig") # create task here?
+
+        if not file_name or not yt_show_title:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text="☁️ Error occurred while loading the video, sorry.")
+            safe_track(mp, str(update.effective_chat.id), 'Warning: youtube download issue', {
+                'url': url})
+
+            return ConversationHandler.END
+
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+
+        # TODO: check if file is cached
+
+        last_message = await context.bot.send_message(chat_id=update.effective_chat.id, text=f"⏳ Processing the text of {yt_show_title}. It may take a while...")
+        context.user_data["card_last_message_id"] = last_message.message_id
+
+        try:
+            res = await extract_words(file_name, series_name=yt_show_title)
+        except Exception as e:
+            logging.error(f"Error {e} while extracting  {file_name}")
+            safe_track(mp, str(update.effective_chat.id), 'Error', {
+                'filename': file_name,
+                'action': 'extract_words'
+            })
+
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=update.effective_chat.id,
+                    message_id=last_message.message_id,
+                    text="☁️ Something went wrong while parsing the words. It's not you, it's me."
+                )
+            except telegram.error.BadRequest:
+                pass
+            return ConversationHandler.END
+
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+
+        if res:
+            context.user_data["cards"] = res
+            context.user_data["card_index"] = 0
+
+            # Safe edit episodes list title
+            try:
+                await context.bot.send_message(chat_id=update.effective_chat.id,
+                                                    text=f"Show '{yt_show_title}'", parse_mode='Markdown')
+            except telegram.error.BadRequest:
+                pass
+
             # FIX: Safe delete to avoid "Message to delete not found" on double-clicks
             msg_id = context.user_data.get("tap_vocab_message_id")
             if msg_id:
@@ -491,10 +607,9 @@ async def cb_handler_episode_id(update: Update, context: CallbackContext):
 
             await show_card(update, last_message.message_id, context)
         else:
-            safe_track(mp, str(update.effective_chat.id), 'Error: Episode extraction failed', {
-                'episode_id': episode_id,
-                'title': title,
-                'show_id': context.user_data.get("show_id")
+            safe_track(mp, str(update.effective_chat.id), 'Error: Youtube extraction failed', {
+                'title': yt_show_title,
+                'show_id': url
             })
 
             # FIX: Edit the hanging "Processing..." message if no words were found
