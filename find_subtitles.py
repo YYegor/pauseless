@@ -1,14 +1,13 @@
-from json import JSONDecodeError
+from PIL import Image, UnidentifiedImageError, ImageFilter
 import requests as regular_requests
+from json import JSONDecodeError
 from curl_cffi import requests
 from io import BytesIO
-from PIL import Image
-from PIL import UnidentifiedImageError
-import os
-import logging
 import requests_cache
+import logging
 import config
 import yt_dlp
+import os
 
 logging.basicConfig(
     format=config.logs_format,
@@ -245,37 +244,114 @@ def img_is_cached(filename_full) -> bool:
         return False
 
 
+from PIL import Image, UnidentifiedImageError, ImageFilter, ImageOps, ImageEnhance
+
+
 def get_img_resized(input_path, new_height=config.chat_preview_height):
     filename = input_path.split('/')[-1].split('.')[0]
     filename_end = '_.jpg'
-    if img_is_cached(os.path.join(config.img_cache_folder_name, filename + filename_end)):
-        pass
-    else:
+    save_path = os.path.join(config.img_cache_folder_name, filename + filename_end)
+
+    if img_is_cached(save_path):
+        return save_path
+
+    try:
         response = requests.get(input_path, impersonate="chrome120")
         img_data = response.content
         img_bytes_io = BytesIO(img_data)
-        try:
-            img = Image.open(img_bytes_io)
-        except UnidentifiedImageError as e:
-            logging.warning(f"Warning, no image: {response.status_code}, {filename}, {input_path}, {e}")
-            return os.path.join(config.img_cache_folder_name, "no_image" + filename_end)
-        width, height = img.size
 
-        # convert png to jpg
-        if img.mode in ("P", "RGBA"):
-            img = img.convert("RGB")
-        target_width = int((new_height / height) * width)
-        new_image = Image.new("RGB", (200, new_height), (0, 0, 0))
+        img = Image.open(img_bytes_io)
+    except UnidentifiedImageError as e:
+        logging.warning(f"Warning, no image: {response.status_code}, {filename}, {input_path}, {e}")
+        return os.path.join(config.img_cache_folder_name, "no_image" + filename_end)
+    except Exception as e:
+        logging.error(f"Download error: {e}")
+        return os.path.join(config.img_cache_folder_name, "no_image" + filename_end)
 
-        img = img.resize((target_width, new_height), resample=Image.Resampling.LANCZOS)
-        new_image.paste(img, (0, 0))
-        try:
-            new_image.save(os.path.join(config.img_cache_folder_name, filename + filename_end), format="JPEG",
-                           quality=100)
-        except IOError as e:
-            logging.error(f"Error: {e} while saving {filename}")
+    width, height = img.size
+    canvas_size = (200, new_height)
 
-    return os.path.join(config.img_cache_folder_name, filename + filename_end)
+    # Convert transparent PNGs to RGB properly before processing
+    if img.mode in ("P", "RGBA"):
+        background = Image.new("RGB", img.size, (0, 0, 0))
+        if img.mode == "RGBA":
+            background.paste(img, mask=img.split()[3])
+        else:
+            background.paste(img)
+        img = background
+    elif img.mode != "RGB":
+        img = img.convert("RGB")
+
+    # --- 1. CREATE THE BLURRED BACKGROUND ---
+    # ImageOps.fit crops and zooms the image to perfectly fill the 200xNewHeight canvas
+    bg_img = ImageOps.fit(img, canvas_size, method=Image.Resampling.LANCZOS)
+
+    # Apply a strong blur (radius 15 usually looks best for UI backgrounds)
+    bg_img = bg_img.filter(ImageFilter.GaussianBlur(radius=15))
+
+    # Optional but highly recommended: Darken the blurred background by 40%
+    # so the sharp foreground poster stands out more.
+    enhancer = ImageEnhance.Brightness(bg_img)
+    bg_img = enhancer.enhance(0.6)
+
+    # --- 2. CREATE THE SHARP, CENTERED FOREGROUND ---
+    # Calculate scale ratio so the poster perfectly fits *inside* the canvas without being cut off
+    ratio = min(canvas_size[0] / width, canvas_size[1] / height)
+    fg_width = int(width * ratio)
+    fg_height = int(height * ratio)
+
+    # Resize with LANCZOS and apply UnsharpMask to remove downscaling blur ("soapy" look)
+    fg_img = img.resize((fg_width, fg_height), resample=Image.Resampling.LANCZOS)
+    fg_img = fg_img.filter(ImageFilter.UnsharpMask(radius=1, percent=75, threshold=3))
+
+    # --- 3. COMPOSE THE IMAGE ---
+    # Calculate exactly where to paste the foreground so it sits perfectly in the center
+    x_offset = (canvas_size[0] - fg_width) // 2
+    y_offset = (canvas_size[1] - fg_height) // 2
+
+    # Paste the sharp foreground onto the blurred background
+    bg_img.paste(fg_img, (x_offset, y_offset))
+
+    # --- 4. SAVE ---
+    try:
+        # subsampling=0 stops JPEG compression from muddying the colors
+        bg_img.save(save_path, format="JPEG", quality=100, subsampling=0)
+    except IOError as e:
+        logging.error(f"Error: {e} while saving {filename}")
+
+    return save_path
+
+# def get_img_resized(input_path, new_height=config.chat_preview_height):
+#     filename = input_path.split('/')[-1].split('.')[0]
+#     filename_end = '_.jpg'
+#     if img_is_cached(os.path.join(config.img_cache_folder_name, filename + filename_end)):
+#         pass
+#     else:
+#         response = requests.get(input_path, impersonate="chrome120")
+#         img_data = response.content
+#         img_bytes_io = BytesIO(img_data)
+#         try:
+#             img = Image.open(img_bytes_io)
+#         except UnidentifiedImageError as e:
+#             logging.warning(f"Warning, no image: {response.status_code}, {filename}, {input_path}, {e}")
+#             return os.path.join(config.img_cache_folder_name, "no_image" + filename_end)
+#         width, height = img.size
+#
+#         # convert png to jpg
+#         if img.mode in ("P", "RGBA"):
+#             img = img.convert("RGB")
+#         target_width = int((new_height / height) * width)
+#         new_image = Image.new("RGB", (200, new_height), (0, 0, 0))
+#
+#         img = img.resize((target_width, new_height), resample=Image.Resampling.HAMMING)
+#         new_image.paste(img, (0, 0))
+#         try:
+#             new_image.save(os.path.join(config.img_cache_folder_name, filename + filename_end), format="JPEG",
+#                            quality=100)
+#         except IOError as e:
+#             logging.error(f"Error: {e} while saving {filename}")
+#
+#     return os.path.join(config.img_cache_folder_name, filename + filename_end)
 
 
 def parse_episodes(opn_data: dict) -> dict:

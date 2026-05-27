@@ -23,6 +23,7 @@ ipa = "^4.12.2"
 eng-to-ipa = "^0.0.2"
 httpx = {extras = ["http2"], version = "^0.28.1"}
 curl-cffi = "^0.15.0"
+flask = "^3.1.3"
 
 [build-system]
 requires = ["poetry-core"]
