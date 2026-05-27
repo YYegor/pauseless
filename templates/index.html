@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ru">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -29,6 +29,9 @@
 <body class="p-4">
 
 <div id="app" class="max-w-md mx-auto">
+    <!-- Говорим Flask/Jinja2 игнорировать фигурные скобки внутри этого блока -->
+    {% raw %}
+
     <!-- Шапка -->
     <div class="mb-4 text-center">
         <h2 class="text-xl font-bold">Привет, {{ userName }}!</h2>
@@ -50,6 +53,9 @@
         <h3 class="font-semibold mb-2">Содержимое файла:</h3>
         <pre class="text-sm whitespace-pre-wrap font-mono">{{ fileContent }}</pre>
     </div>
+
+    {% endraw %}
+    <!-- Конец игнорирования для Flask -->
 
     <!-- Кнопка закрытия -->
     <button @click="closeApp" class="tg-button w-full mt-6 py-3 rounded-xl font-semibold transition-opacity hover:opacity-80">
