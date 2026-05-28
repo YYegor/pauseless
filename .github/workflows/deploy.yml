@@ -39,7 +39,7 @@ jobs:
 
           # Install dependencies based on poetry.lock and pyproject.toml
           poetry install --no-root
-
+          poetry update yt-dlp
           # Restart the bot service
           sudo systemctl restart pauseless.service
           EOF
